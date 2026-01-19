@@ -32,10 +32,10 @@ export function Toolbar(props: {
       role="toolbar"
       aria-label={t("a11y.toolbar", "Document toolbar")}
     >
-      <div className="hv-toolbar__left gap-2">
+      <div className="hv-toolbar__left space-x-1">
         <button
           type="button"
-          className="hv-btn"
+          className="hv-btn text-sm"
           onClick={props.onToggleThumbnails}
           aria-pressed={props.showThumbnails}
         >
@@ -44,7 +44,7 @@ export function Toolbar(props: {
         {props.mode !== "create" && (
           <button
             type="button"
-            className="hv-btn"
+            className="hv-btn text-sm"
             onClick={props.onToggleSignatures}
             aria-pressed={props.showSignatures}
           >
@@ -55,7 +55,9 @@ export function Toolbar(props: {
         <button
           type="button"
           className={
-            props.layout === "single" ? "hv-btn hv-btn--active" : "hv-btn"
+            props.layout === "single"
+              ? "hv-btn hv-btn--active text-sm"
+              : "hv-btn text-sm"
           }
           onClick={() => props.onChangeLayout("single")}
         >
@@ -64,7 +66,9 @@ export function Toolbar(props: {
         <button
           type="button"
           className={
-            props.layout === "side-by-side" ? "hv-btn hv-btn--active" : "hv-btn"
+            props.layout === "side-by-side"
+              ? "hv-btn hv-btn--active text-sm"
+              : "hv-btn text-sm"
           }
           onClick={() => props.onChangeLayout("side-by-side")}
         >
@@ -87,7 +91,7 @@ export function Toolbar(props: {
         {props.allowSigning && (
           <button
             type="button"
-            className="hv-btn hv-btn--primary"
+            className="hv-btn hv-btn--primary text-sm"
             onClick={props.onSign}
             disabled={props.signingDisabled}
           >
@@ -96,14 +100,18 @@ export function Toolbar(props: {
         )}
 
         {props.canExportPdf && (
-          <button type="button" className="hv-btn" onClick={props.onExportPdf}>
+          <button
+            type="button"
+            className="hv-btn text-sm"
+            onClick={props.onExportPdf}
+          >
             {t("toolbar.exportPdf", "Export as PDF")}
           </button>
         )}
         {props.canSave && (
           <button
             type="button"
-            className="hv-btn hv-btn--primary"
+            className="hv-btn hv-btn--primary text-sm"
             onClick={props.onSave}
           >
             {t("toolbar.save", "Save")}
