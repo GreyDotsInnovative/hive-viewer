@@ -1,0 +1,59 @@
+{
+  "name": "@zerohive/hive-viewer",
+  "version": "0.2.2",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zerohive/hive-viewer.git"
+  },
+  "homepage": "https://github.com/zerohive/hive-viewer",
+  "bugs": {
+    "url": "https://github.com/zerohive/hive-viewer/issues"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "dependencies": {
+    "dompurify": "^3.1.7",
+    "html-to-docx": "^1.8.0",
+    "html2canvas": "^1.4.1",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.8.0",
+    "markdown-it": "^14.1.0",
+    "pdfjs-dist": "^4.7.76",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^25.0.9",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsup": "^8.5.1",
+    "typescript": "^5.6.3"
+  },
+  "scripts": {
+    "build": "tsup && cp dist/index.js dist/index.mjs && cp src/styles/hiveviewer.css dist/styles.css",
+    "dev": "tsup src/index.tsx --format esm --watch"
+  }
+}

@@ -1,0 +1,36 @@
+{
+    "extends": "tslint:recommended",
+    "rules": {
+        "semicolon": [
+            true,
+            "always"
+        ],
+        "quotemark": [
+            true,
+            "single",
+            "jsx-double"
+        ],
+        "trailing-comma": [
+            true,
+            {
+                "multiline": "always",
+                "singleline": "never"
+            }
+        ],
+        "no-console": [
+            true,
+            "log",
+            "error"
+        ],
+        "no-var-keyword": true,
+        "typedef": [
+            true,
+            "call-signature",
+            "parameter",
+            "property-declaration",
+            "member-variable-declaration"
+        ],
+        "no-any": true,
+        "prefer-const": true
+    }
+}
