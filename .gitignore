@@ -1,0 +1,9 @@
+/.npmignore
+/dist
+/package.json
+/pnpm-lock.yaml
+/README.md
+/src
+/tsconfig.json
+/tslint.json
+/tsup.config.ts
