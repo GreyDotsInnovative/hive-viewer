@@ -1,24 +1,24 @@
-'use client';
+"use client";
 
-import JSZip from 'jszip';
-import React, { useEffect, useMemo, useState } from 'react';
-import type { PageLayout } from '../types';
+import React, { useEffect, useMemo, useState } from "react";
+import JSZip from "jszip";
+import type { PageLayout } from "../types";
 
-interface Slide { index: number; text: string }
+type Slide = { index: number; text: string };
 
 function decodeXml(s: string): string {
   return s
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, '\'');
+    .replace(/&#39;/g, "'");
 }
 
 function extractText(xml: string) {
   return [...xml.matchAll(/<a:t>(.*?)<\/a:t>/g)]
-    .map((m) => decodeXml(m[1] || ''))
-    .join(' ')
+    .map((m) => decodeXml(m[1] || ""))
+    .join(" ")
     .trim();
 }
 
@@ -38,10 +38,10 @@ export function PptxRenderer(props: {
   /** Callback when slide count is determined */
   onSlideCount: (n: number) => void;
   /** Callback for slide thumbnails */
-  onThumbs: (thumbs: Array<string | undefined>) => void;
+  onThumbs: (thumbs: (string | undefined)[]) => void;
 }) {
   const [slides, setSlides] = useState<Slide[]>([]);
-  const [thumbs, setThumbs] = useState<Array<string | undefined>>([]);
+  const [thumbs, setThumbs] = useState<(string | undefined)[]>([]);
 
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -53,7 +53,7 @@ export function PptxRenderer(props: {
       setSlides([]);
       setThumbs([]);
       if (!props.arrayBuffer) {
-        setError('No PPTX source provided.');
+        setError("No PPTX source provided.");
         setLoading(false);
         return;
       }
@@ -65,18 +65,18 @@ export function PptxRenderer(props: {
           .sort();
         const slidesOut: Slide[] = [];
         for (let i = 0; i < slidePaths.length; i++) {
-          const xml = await zip.files[slidePaths[i]].async('string');
+          const xml = await zip.files[slidePaths[i]].async("string");
           slidesOut.push({ index: i + 1, text: extractText(xml) });
         }
-        if (cancel) { return; }
+        if (cancel) return;
         setSlides(
-          slidesOut.length ? slidesOut : [{ index: 1, text: '(empty)' }],
+          slidesOut.length ? slidesOut : [{ index: 1, text: "(empty)" }],
         );
         props.onSlideCount(slidesOut.length || 1);
 
         // Generate all thumbnails up front (SVG placeholder for now)
         const thumbWidth = 56;
-        const thumbsArr: Array<string | undefined> = [];
+        const thumbsArr: (string | undefined)[] = [];
         for (let i = 0; i < (slidesOut.length || 1); i++) {
           thumbsArr.push(
             `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgThumb(i + 1))}`,
@@ -85,11 +85,11 @@ export function PptxRenderer(props: {
         setThumbs(thumbsArr);
       } catch (e) {
         setSlides([
-          { index: 1, text: 'Unable to render this .pptx in-browser.' },
+          { index: 1, text: "Unable to render this .pptx in-browser." },
         ]);
         setThumbs([undefined]);
         setError(
-          'Failed to load PPTX. ' + (e instanceof Error ? e.message : ''),
+          "Failed to load PPTX. " + (e instanceof Error ? e.message : ""),
         );
       } finally {
         setLoading(false);
@@ -106,12 +106,11 @@ export function PptxRenderer(props: {
   }, [thumbs]);
 
   const pagesToShow = useMemo(() => {
-    if (props.layout === 'side-by-side') {
+    if (props.layout === "side-by-side")
       return [
         props.currentPage,
         Math.min(slides.length || props.currentPage + 1, props.currentPage + 1),
       ];
-    }
     return [props.currentPage];
   }, [props.currentPage, props.layout, slides.length]);
 
@@ -125,9 +124,9 @@ export function PptxRenderer(props: {
       {!error && slides && slides.length > 0 && (
         <div
           className={
-            props.layout === 'side-by-side'
-              ? 'hv-pages hv-pages--two'
-              : 'hv-pages'
+            props.layout === "side-by-side"
+              ? "hv-pages hv-pages--two"
+              : "hv-pages"
           }
         >
           {pagesToShow.map((p) => {
@@ -140,7 +139,7 @@ export function PptxRenderer(props: {
                 onFocus={() => props.onCurrentPageChange(p)}
               >
                 <div className="hv-slide-title">Slide {p}</div>
-                <div className="hv-slide-text">{s?.text || ''}</div>
+                <div className="hv-slide-text">{s?.text || ""}</div>
               </div>
             );
           })}
