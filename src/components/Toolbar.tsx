@@ -32,89 +32,78 @@ export function Toolbar(props: {
       role="toolbar"
       aria-label={t("a11y.toolbar", "Document toolbar")}
     >
-      <div className="hv-toolbar__left space-x-1">
+      {/* LEFT */}
+      <div className="hv-toolbar__group">
         <button
-          type="button"
-          className="hv-btn text-sm"
+          className={`hv-btn ${props.showThumbnails ? "hv-btn--active" : ""}`}
           onClick={props.onToggleThumbnails}
           aria-pressed={props.showThumbnails}
         >
-          {t("toolbar.thumbs", "Thumbnails")}
+          Thumbnails
         </button>
+
         {props.mode !== "create" && (
           <button
-            type="button"
-            className="hv-btn text-sm"
+            className={`hv-btn ${props.showSignatures ? "hv-btn--active" : ""}`}
             onClick={props.onToggleSignatures}
             aria-pressed={props.showSignatures}
           >
-            {t("toolbar.signatures", "Signatures")}
+            Signatures
           </button>
         )}
-        <span className="hv-sep" />
+      </div>
+
+      {/* CENTER */}
+      <div className="hv-toolbar__group hv-segment">
         <button
-          type="button"
-          className={
-            props.layout === "single"
-              ? "hv-btn hv-btn--active text-sm"
-              : "hv-btn text-sm"
-          }
+          className={`hv-btn ${props.layout === "single" ? "hv-btn--active" : ""}`}
           onClick={() => props.onChangeLayout("single")}
         >
-          {t("toolbar.layout.single", "Single")}
+          Single page
         </button>
         <button
-          type="button"
-          className={
-            props.layout === "side-by-side"
-              ? "hv-btn hv-btn--active text-sm"
-              : "hv-btn text-sm"
-          }
+          className={`hv-btn ${props.layout === "side-by-side" ? "hv-btn--active" : ""}`}
           onClick={() => props.onChangeLayout("side-by-side")}
         >
-          {t("toolbar.layout.two", "Two")}
+          Side-by-side
         </button>
       </div>
 
-      <div className="hv-toolbar__right">
+      {/* RIGHT */}
+      <div className="hv-toolbar__group hv-toolbar__actions">
         {props.showHeaderFooterToggle && (
-          <label className="hv-toggle">
+          <label className="hv-switch">
             <input
               type="checkbox"
               checked={props.headerFooterEnabled}
               onChange={props.onToggleHeaderFooter}
             />
-            <span>{t("toolbar.letterhead", "Letterhead")}</span>
+            <span className="hv-switch__slider" />
+            <span className="hv-switch__label">
+              {t("toolbar.letterhead", "Letterhead")}
+            </span>
           </label>
         )}
 
         {props.allowSigning && (
           <button
-            type="button"
-            className="hv-btn hv-btn--primary text-sm"
+            className="hv-btn hv-btn--primary"
             onClick={props.onSign}
             disabled={props.signingDisabled}
           >
-            {t("toolbar.sign", "Sign Document")}
+            Sign document
           </button>
         )}
 
         {props.canExportPdf && (
-          <button
-            type="button"
-            className="hv-btn text-sm"
-            onClick={props.onExportPdf}
-          >
-            {t("toolbar.exportPdf", "Export as PDF")}
+          <button className="hv-btn" onClick={props.onExportPdf}>
+            Export PDF
           </button>
         )}
+
         {props.canSave && (
-          <button
-            type="button"
-            className="hv-btn hv-btn--primary text-sm"
-            onClick={props.onSave}
-          >
-            {t("toolbar.save", "Save")}
+          <button className="hv-btn hv-btn--primary" onClick={props.onSave}>
+            Save
           </button>
         )}
       </div>

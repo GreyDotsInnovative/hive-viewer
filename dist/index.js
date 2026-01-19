@@ -10,8 +10,7 @@ import {
   useEffect,
   useImperativeHandle,
   useMemo,
-  useRef,
-  useState
+  useRef
 } from "react";
 
 // src/utils/sanitize.ts
@@ -26,222 +25,122 @@ function sanitizeHtml(html) {
 // src/editors/RichTextEditor.tsx
 import { jsx, jsxs } from "react/jsx-runtime";
 var PAGE_H = 1122;
-var RichTextEditor = forwardRef((props, ref) => {
-  const readOnly = props.mode === "view";
-  const md = useMemo(
-    () => new MarkdownIt({ html: false, linkify: true, breaks: true }),
-    []
-  );
-  const scrollerRef = useRef(null);
-  const editorRef = useRef(null);
-  const captureRef = useRef(null);
-  const [html, setHtml] = useState("<p><br/></p>");
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (props.mode === "create") {
-        setHtml("<p><br/></p>");
-        return;
-      }
-      if (!props.arrayBuffer) {
-        return;
-      }
-      if (props.fileType === "docx") {
-        const res = await mammoth.convertToHtml({
-          arrayBuffer: props.arrayBuffer
-        });
-        if (!cancelled) {
-          setHtml(sanitizeHtml(res.value || "<p><br/></p>"));
+var RichTextEditor = forwardRef(
+  (props, ref) => {
+    const readOnly = props.mode === "view";
+    const md = useMemo(
+      () => new MarkdownIt({ html: false, linkify: true, breaks: true }),
+      []
+    );
+    const scrollerRef = useRef(null);
+    const editorRef = useRef(null);
+    const captureRef = useRef(null);
+    const initialized = useRef(false);
+    useEffect(() => {
+      if (initialized.current) return;
+      (async () => {
+        if (props.mode === "create") {
+          editorRef.current.innerHTML = "<p><br/></p>";
+          initialized.current = true;
+          return;
         }
-      } else {
-        const text = new TextDecoder().decode(props.arrayBuffer);
-        if (props.fileType === "md") {
-          setHtml(sanitizeHtml(md.render(text)));
+        if (!props.arrayBuffer) return;
+        if (props.fileType === "docx") {
+          const res = await mammoth.convertToHtml({
+            arrayBuffer: props.arrayBuffer
+          });
+          editorRef.current.innerHTML = sanitizeHtml(
+            res.value || "<p><br/></p>"
+          );
         } else {
-          setHtml(`<pre>${escapeHtml(text)}</pre>`);
+          const text = new TextDecoder().decode(props.arrayBuffer);
+          editorRef.current.innerHTML = props.fileType === "md" ? sanitizeHtml(md.render(text)) : `<pre>${escapeHtml(text)}</pre>`;
         }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [props.arrayBuffer, props.fileType, props.mode, md]);
-  useEffect(() => {
-    const el = scrollerRef.current;
-    if (!el) {
-      return;
+        initialized.current = true;
+      })();
+    }, [props.arrayBuffer, props.fileType, props.mode, md]);
+    useEffect(() => {
+      const el = scrollerRef.current;
+      if (!el) return;
+      const recompute = () => props.onPageCount(Math.max(1, Math.ceil(el.scrollHeight / PAGE_H)));
+      recompute();
+      const ro = new ResizeObserver(recompute);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }, [props.headerFooterEnabled]);
+    function exec(cmd) {
+      if (readOnly) return;
+      document.execCommand(cmd);
+      editorRef.current?.focus();
     }
-    const recompute = () => props.onPageCount(Math.max(1, Math.ceil(el.scrollHeight / PAGE_H)));
-    recompute();
-    const ro = new ResizeObserver(recompute);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [html, props.headerFooterEnabled]);
-  function exec(cmd) {
-    if (readOnly) {
-      return;
-    }
-    document.execCommand(cmd);
-  }
-  function onClick(e) {
-    if (!props.armedSignatureUrl) {
-      return;
-    }
-    const scroller = scrollerRef.current;
-    if (!scroller) {
-      return;
-    }
-    const rect = e.currentTarget.getBoundingClientRect();
-    const absY = scroller.scrollTop + (e.clientY - rect.top);
-    const page = Math.max(1, Math.floor(absY / PAGE_H) + 1);
-    const pageTop = (page - 1) * PAGE_H;
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (absY - pageTop) / PAGE_H;
-    props.onPlaceSignature({ page, x, y, w: 0.25, h: 0.1 });
-  }
-  async function requestThumbnail(index) {
-    const scroller = scrollerRef.current;
-    const capture = captureRef.current;
-    if (!scroller || !capture) {
-      return void 0;
-    }
-    const old = scroller.scrollTop;
-    scroller.scrollTop = index * PAGE_H;
-    await new Promise((r) => requestAnimationFrame(() => r(null)));
-    try {
-      const canvas = await html2canvas(capture, {
-        backgroundColor: null,
-        scale: 0.25,
-        useCORS: true
+    function onClickPage(e) {
+      if (!props.armedSignatureUrl) return;
+      const scroller = scrollerRef.current;
+      if (!scroller) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const absY = scroller.scrollTop + (e.clientY - rect.top);
+      const page = Math.floor(absY / PAGE_H) + 1;
+      props.onPlaceSignature({
+        page,
+        x: (e.clientX - rect.left) / rect.width,
+        y: absY % PAGE_H / PAGE_H,
+        w: 0.25,
+        h: 0.1
       });
-      return canvas.toDataURL("image/png");
-    } catch {
-      return void 0;
-    } finally {
-      scroller.scrollTop = old;
     }
-  }
-  async function save(exportPdf) {
-    const inner = editorRef.current?.innerHTML ?? html;
-    const stitched = `<!doctype html><html><head><meta charset="utf-8" /></head><body>${inner}</body></html>`;
-    if (exportPdf) {
-      const b642 = btoa(unescape(encodeURIComponent(stitched)));
-      props.onSave(b642, {
-        fileName: replaceExt(props.fileName, "html"),
-        fileType: "txt",
-        exportedAsPdf: true,
+    async function requestThumbnail(index) {
+      const scroller = scrollerRef.current;
+      const capture = captureRef.current;
+      if (!scroller || !capture) return;
+      const old = scroller.scrollTop;
+      scroller.scrollTop = index * PAGE_H;
+      await new Promise((r) => requestAnimationFrame(r));
+      try {
+        const canvas = await html2canvas(capture, {
+          scale: 0.25,
+          useCORS: true
+        });
+        return canvas.toDataURL("image/png");
+      } finally {
+        scroller.scrollTop = old;
+      }
+    }
+    async function save(exportPdf) {
+      const html = editorRef.current?.innerHTML ?? "";
+      const stitched = `<!doctype html><html><body>${html}</body></html>`;
+      const b64 = btoa(unescape(encodeURIComponent(stitched)));
+      props.onSave(b64, {
+        fileName: props.fileName,
+        fileType: props.fileType,
+        exportedAsPdf: exportPdf,
         annotations: { signaturePlacements: props.signaturePlacements }
       });
-      return;
     }
-    if (props.fileType === "docx") {
-      try {
-        const response = await fetch("/api/export-docx", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            html: stitched,
-            fileName: replaceExt(props.fileName, "docx")
-          })
-        });
-        if (!response.ok) {
-          throw new Error("Failed to generate DOCX");
-        }
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = replaceExt(props.fileName, "docx");
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => {
-          window.URL.revokeObjectURL(url);
-          a.remove();
-        }, 100);
-      } catch (err) {
-        alert(
-          "DOCX export failed: " + (err instanceof Error ? err.message : String(err))
-        );
-      }
-      return;
-    }
-    const text = editorRef.current?.innerText ?? "";
-    const b64 = btoa(unescape(encodeURIComponent(text)));
-    props.onSave(b64, {
-      fileName: replaceExt(props.fileName, props.fileType),
-      fileType: props.fileType,
-      annotations: { signaturePlacements: props.signaturePlacements }
-    });
-  }
-  useImperativeHandle(ref, () => ({ save, requestThumbnail }));
-  return /* @__PURE__ */ jsxs("div", { className: "hv-doc", children: [
-    /* @__PURE__ */ jsxs("div", { className: "hv-ribbon", role: "toolbar", children: [
-      /* @__PURE__ */ jsx(
-        "button",
-        {
-          className: "hv-btn",
-          onClick: () => exec("bold"),
-          disabled: readOnly,
-          children: "B"
-        }
-      ),
-      /* @__PURE__ */ jsx(
-        "button",
-        {
-          className: "hv-btn",
-          onClick: () => exec("italic"),
-          disabled: readOnly,
-          children: "I"
-        }
-      ),
-      /* @__PURE__ */ jsx(
-        "button",
-        {
-          className: "hv-btn",
-          onClick: () => exec("underline"),
-          disabled: readOnly,
-          children: "U"
-        }
-      ),
-      props.armedSignatureUrl ? /* @__PURE__ */ jsx("div", { className: "hv-hint", children: "Click to place signature" }) : null
-    ] }),
-    /* @__PURE__ */ jsx("div", { className: "hv-scroll", ref: scrollerRef, onClick, children: /* @__PURE__ */ jsxs("div", { className: "hv-pageStage", ref: captureRef, children: [
-      props.headerFooterEnabled && props.headerComponent ? /* @__PURE__ */ jsx("div", { className: "hv-letterhead", children: props.headerComponent }) : null,
-      /* @__PURE__ */ jsx(
+    useImperativeHandle(ref, () => ({
+      save,
+      requestThumbnail
+    }));
+    return /* @__PURE__ */ jsxs("div", { className: "hv-root", children: [
+      /* @__PURE__ */ jsxs("div", { className: "hv-toolbar", children: [
+        /* @__PURE__ */ jsx("button", { onClick: () => exec("bold"), disabled: readOnly, children: "B" }),
+        /* @__PURE__ */ jsx("button", { onClick: () => exec("italic"), disabled: readOnly, children: "I" }),
+        /* @__PURE__ */ jsx("button", { onClick: () => exec("underline"), disabled: readOnly, children: "U" }),
+        props.armedSignatureUrl && /* @__PURE__ */ jsx("span", { className: "hv-hint", children: "Click page to place signature" })
+      ] }),
+      /* @__PURE__ */ jsx("div", { className: "hv-scroll", ref: scrollerRef, onClick: onClickPage, children: /* @__PURE__ */ jsx("div", { className: "hv-pageStage", ref: captureRef, children: /* @__PURE__ */ jsx(
         "div",
         {
           ref: editorRef,
-          className: readOnly ? "hv-editor hv-editor--ro" : "hv-editor",
+          className: `hv-editor ${readOnly ? "ro" : ""}`,
           contentEditable: !readOnly,
-          suppressContentEditableWarning: true,
-          onInput: () => setHtml(editorRef.current?.innerHTML ?? ""),
-          dangerouslySetInnerHTML: { __html: html }
+          suppressContentEditableWarning: true
         }
-      ),
-      props.headerFooterEnabled && props.footerComponent ? /* @__PURE__ */ jsx("div", { className: "hv-letterhead hv-letterhead--footer", children: props.footerComponent }) : null,
-      props.mode === "create" && props.signatures.length ? /* @__PURE__ */ jsx("div", { className: "hv-signatures-inline", children: props.signatures.map((s, i) => /* @__PURE__ */ jsxs("div", { className: "hv-sign-inline", children: [
-        /* @__PURE__ */ jsx(
-          "img",
-          {
-            src: s.signatureImageUrl,
-            alt: "",
-            className: "hv-sign-img"
-          }
-        ),
-        /* @__PURE__ */ jsxs("div", { children: [
-          /* @__PURE__ */ jsx("div", { className: "hv-sign-name", children: s.signedBy }),
-          /* @__PURE__ */ jsx("div", { className: "hv-sign-date", children: new Date(s.dateSigned).toLocaleString() })
-        ] })
-      ] }, i)) }) : null
-    ] }) })
-  ] });
-});
-function replaceExt(name, ext) {
-  const base = name.includes(".") ? name.slice(0, name.lastIndexOf(".")) : name;
-  return `${base}.${ext}`;
-}
+      ) }) })
+    ] });
+  }
+);
 function escapeHtml(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 }
 
 // src/editors/SpreadsheetEditor.tsx
@@ -941,12 +840,12 @@ function Toolbar(props) {
       role: "toolbar",
       "aria-label": t("a11y.toolbar", "Document toolbar"),
       children: [
-        /* @__PURE__ */ jsxs8("div", { className: "hv-toolbar__left gap-2", children: [
+        /* @__PURE__ */ jsxs8("div", { className: "hv-toolbar__left space-x-1", children: [
           /* @__PURE__ */ jsx8(
             "button",
             {
               type: "button",
-              className: "hv-btn",
+              className: "hv-btn text-sm",
               onClick: props.onToggleThumbnails,
               "aria-pressed": props.showThumbnails,
               children: t("toolbar.thumbs", "Thumbnails")
@@ -956,7 +855,7 @@ function Toolbar(props) {
             "button",
             {
               type: "button",
-              className: "hv-btn",
+              className: "hv-btn text-sm",
               onClick: props.onToggleSignatures,
               "aria-pressed": props.showSignatures,
               children: t("toolbar.signatures", "Signatures")
@@ -967,7 +866,7 @@ function Toolbar(props) {
             "button",
             {
               type: "button",
-              className: props.layout === "single" ? "hv-btn hv-btn--active" : "hv-btn",
+              className: props.layout === "single" ? "hv-btn hv-btn--active text-sm" : "hv-btn text-sm",
               onClick: () => props.onChangeLayout("single"),
               children: t("toolbar.layout.single", "Single")
             }
@@ -976,7 +875,7 @@ function Toolbar(props) {
             "button",
             {
               type: "button",
-              className: props.layout === "side-by-side" ? "hv-btn hv-btn--active" : "hv-btn",
+              className: props.layout === "side-by-side" ? "hv-btn hv-btn--active text-sm" : "hv-btn text-sm",
               onClick: () => props.onChangeLayout("side-by-side"),
               children: t("toolbar.layout.two", "Two")
             }
@@ -998,18 +897,26 @@ function Toolbar(props) {
             "button",
             {
               type: "button",
-              className: "hv-btn hv-btn--primary",
+              className: "hv-btn hv-btn--primary text-sm",
               onClick: props.onSign,
               disabled: props.signingDisabled,
               children: t("toolbar.sign", "Sign Document")
             }
           ),
-          props.canExportPdf && /* @__PURE__ */ jsx8("button", { type: "button", className: "hv-btn", onClick: props.onExportPdf, children: t("toolbar.exportPdf", "Export as PDF") }),
+          props.canExportPdf && /* @__PURE__ */ jsx8(
+            "button",
+            {
+              type: "button",
+              className: "hv-btn text-sm",
+              onClick: props.onExportPdf,
+              children: t("toolbar.exportPdf", "Export as PDF")
+            }
+          ),
           props.canSave && /* @__PURE__ */ jsx8(
             "button",
             {
               type: "button",
-              className: "hv-btn hv-btn--primary",
+              className: "hv-btn hv-btn--primary text-sm",
               onClick: props.onSave,
               children: t("toolbar.save", "Save")
             }
@@ -1025,8 +932,13 @@ import { jsx as jsx9, jsxs as jsxs9 } from "react/jsx-runtime";
 function DocumentViewer(props) {
   const mode = props.mode ?? "view";
   const theme = props.theme ?? "light";
-  const locale = useMemo6(() => ({ ...defaultLocale, ...props.locale ?? {} }), [props.locale]);
-  const [layout, setLayout] = useState6(props.defaultLayout ?? "single");
+  const locale = useMemo6(
+    () => ({ ...defaultLocale, ...props.locale ?? {} }),
+    [props.locale]
+  );
+  const [layout, setLayout] = useState6(
+    props.defaultLayout ?? "single"
+  );
   const [showThumbnails, setShowThumbnails] = useState6(true);
   const [showSignatures, setShowSignatures] = useState6(true);
   const [headerFooterEnabled, setHeaderFooterEnabled] = useState6(true);
@@ -1037,10 +949,17 @@ function DocumentViewer(props) {
   const [pageCount, setPageCount] = useState6(1);
   const [currentPage, setCurrentPage] = useState6(1);
   const [thumbs, setThumbs] = useState6([]);
-  const [localSignatures, setLocalSignatures] = useState6(props.signatures ?? []);
-  useEffect6(() => setLocalSignatures(props.signatures ?? []), [props.signatures]);
+  const [localSignatures, setLocalSignatures] = useState6(
+    props.signatures ?? []
+  );
+  useEffect6(
+    () => setLocalSignatures(props.signatures ?? []),
+    [props.signatures]
+  );
   const [sigPlacements, setSigPlacements] = useState6([]);
-  const [armedSignatureUrl, setArmedSignatureUrl] = useState6(null);
+  const [armedSignatureUrl, setArmedSignatureUrl] = useState6(
+    null
+  );
   const editorRef = useRef3(null);
   useEffect6(() => {
     let cancelled = false;
@@ -1054,7 +973,10 @@ function DocumentViewer(props) {
       setArmedSignatureUrl(null);
       if (mode === "create") {
         const ft = props.fileType ?? "docx";
-        setResolved({ fileType: ft, fileName: props.fileName ?? `Untitled.${ft}` });
+        setResolved({
+          fileType: ft,
+          fileName: props.fileName ?? `Untitled.${ft}`
+        });
         return;
       }
       try {
@@ -1068,7 +990,12 @@ function DocumentViewer(props) {
         if (cancelled) {
           return;
         }
-        setResolved({ fileType: res.fileType, fileName: res.fileName, url: res.url, arrayBuffer: res.arrayBuffer });
+        setResolved({
+          fileType: res.fileType,
+          fileName: res.fileName,
+          url: res.url,
+          arrayBuffer: res.arrayBuffer
+        });
       } catch (e) {
         if (cancelled) {
           return;
@@ -1079,7 +1006,14 @@ function DocumentViewer(props) {
     return () => {
       cancelled = true;
     };
-  }, [mode, props.fileUrl, props.base64, props.blob, props.fileName, props.fileType]);
+  }, [
+    mode,
+    props.fileUrl,
+    props.base64,
+    props.blob,
+    props.fileName,
+    props.fileType
+  ]);
   const thumbnails = useMemo6(() => {
     const n = Math.max(1, pageCount);
     return Array.from({ length: n }, (_, i) => ({
@@ -1105,7 +1039,10 @@ function DocumentViewer(props) {
     if (!armedSignatureUrl) {
       return;
     }
-    setSigPlacements((prev) => [...prev, { ...p, signatureImageUrl: armedSignatureUrl }]);
+    setSigPlacements((prev) => [
+      ...prev,
+      { ...p, signatureImageUrl: armedSignatureUrl }
+    ]);
     setArmedSignatureUrl(null);
   }
   async function handleSave(exportPdf) {
@@ -1117,7 +1054,11 @@ function DocumentViewer(props) {
       return;
     }
     const b64 = arrayBufferToBase642(resolved.arrayBuffer);
-    props.onSave?.(b64, { fileName: resolved.fileName, fileType: resolved.fileType, annotations: { sigPlacements } });
+    props.onSave?.(b64, {
+      fileName: resolved.fileName,
+      fileType: resolved.fileType,
+      annotations: { sigPlacements }
+    });
   }
   const canSave = mode === "edit" || mode === "create";
   const canExportPdf = (mode === "edit" || mode === "create") && (resolved?.fileType === "docx" || resolved?.fileType === "md" || resolved?.fileType === "txt" || resolved?.fileType === "xlsx");
@@ -1174,10 +1115,16 @@ function DocumentViewer(props) {
             onCurrentPageChange: setCurrentPage,
             onPageCount: (n) => {
               setPageCount(n);
-              setThumbs((prev) => prev.length === n ? prev : Array.from({ length: n }, (_, i) => prev[i]));
+              setThumbs(
+                (prev) => prev.length === n ? prev : Array.from({ length: n }, (_, i) => prev[i])
+              );
             },
             onThumbs: (t) => setThumbs(t),
-            signatureStamp: armedSignatureUrl ? { imageUrl: armedSignatureUrl, armed: true, onPlaced: placeSignature } : void 0
+            signatureStamp: armedSignatureUrl ? {
+              imageUrl: armedSignatureUrl,
+              armed: true,
+              onPlaced: placeSignature
+            } : void 0
           }
         ) : null,
         resolved.fileType === "docx" || resolved.fileType === "md" || resolved.fileType === "txt" ? /* @__PURE__ */ jsx9(
@@ -1196,7 +1143,9 @@ function DocumentViewer(props) {
             signaturePlacements: sigPlacements,
             onPageCount: (n) => {
               setPageCount(n);
-              setThumbs((prev) => prev.length === n ? prev : Array.from({ length: n }, (_, i) => prev[i]));
+              setThumbs(
+                (prev) => prev.length === n ? prev : Array.from({ length: n }, (_, i) => prev[i])
+              );
             },
             onSave: (b64, meta) => props.onSave?.(b64, meta),
             armedSignatureUrl,
@@ -1223,12 +1172,21 @@ function DocumentViewer(props) {
             onCurrentPageChange: setCurrentPage,
             onSlideCount: (n) => {
               setPageCount(n);
-              setThumbs((prev) => prev.length === n ? prev : Array.from({ length: n }, (_, i) => prev[i]));
+              setThumbs(
+                (prev) => prev.length === n ? prev : Array.from({ length: n }, (_, i) => prev[i])
+              );
             },
             onThumbs: (t) => setThumbs(t)
           }
         ) : null,
-        resolved.fileType === "png" || resolved.fileType === "jpg" || resolved.fileType === "svg" ? /* @__PURE__ */ jsx9(ImageRenderer, { arrayBuffer: resolved.arrayBuffer, fileType: resolved.fileType, fileName: resolved.fileName }) : null
+        resolved.fileType === "png" || resolved.fileType === "jpg" || resolved.fileType === "svg" ? /* @__PURE__ */ jsx9(
+          ImageRenderer,
+          {
+            arrayBuffer: resolved.arrayBuffer,
+            fileType: resolved.fileType,
+            fileName: resolved.fileName
+          }
+        ) : null
       ] }),
       mode !== "create" && localSignatures.length ? /* @__PURE__ */ jsx9(
         SignaturePanel,

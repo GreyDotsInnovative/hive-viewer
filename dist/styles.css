@@ -1,6 +1,6 @@
 /* Focus ring for accessibility */
 .hv-btn:focus, .hv-thumb:focus, .hv-modal-close:focus {
-	outline: 2px solid #6366f1;
+	outline: 1px solid #6366f1;
 	outline-offset: 2px;
 	z-index: 2;
 }
@@ -134,7 +134,7 @@
 
 /* Thumbnails Sidebar Modern Redesign */
 .hv-thumbs {
-	width: 240px;
+	width: 200px;
 	flex: 0 0 auto;
 	background: var(--hv-panel);
 	border-right: 1px solid var(--hv-border);
@@ -477,3 +477,67 @@
 .hv-grid td,.hv-grid th{border:1px solid rgba(0,0,0,.12);padding:6px 8px;min-width:90px}
 .hv-grid th{background:#f1f5f9;font-weight:600;text-align:left}
 .hv-slide{background:#fff;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.25);padding:18px;max-width:480px;min-height:270px}
+
+
+.hv-root {
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+}
+
+.hv-toolbar {
+	position: sticky;
+	top: 0;
+	z-index: 20;
+	display: flex;
+	gap: 8px;
+	padding: 8px 12px;
+	background: #ffffff;
+	border-bottom: 1px solid #e5e7eb;
+}
+
+.hv-toolbar button {
+	padding: 6px 10px;
+	border-radius: 6px;
+	border: 1px solid #d1d5db;
+	background: #fff;
+	cursor: pointer;
+}
+
+.hv-toolbar button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.hv-hint {
+	margin-left: auto;
+	font-size: 13px;
+	color: #2563eb;
+}
+
+.hv-scroll {
+	flex: 1;
+	overflow: auto;
+	padding: 32px 0;
+}
+
+.hv-pageStage {
+	width: 794px;
+	margin: 0 auto;
+	background: white;
+	box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08);
+	padding: 72px;
+	min-height: 1122px;
+}
+
+.hv-editor {
+	outline: none;
+	min-height: 900px;
+	font-family: 'Inter', system-ui, sans-serif;
+	font-size: 15px;
+	line-height: 1.7;
+}
+
+.hv-editor.ro {
+	cursor: default;
+}
