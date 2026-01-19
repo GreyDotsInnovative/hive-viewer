@@ -106,12 +106,13 @@ export function PptxRenderer(props: {
   }, [thumbs]);
 
   const pagesToShow = useMemo(() => {
-    if (props.layout === "side-by-side")
-      return [
-        props.currentPage,
-        Math.min(slides.length || props.currentPage + 1, props.currentPage + 1),
-      ];
-    return [props.currentPage];
+    const total = slides.length;
+    if (props.layout === "side-by-side" && total > 1) {
+      const left = Math.max(1, Math.min(props.currentPage, total));
+      const right = Math.max(1, Math.min(left + 1, total));
+      return left === right ? [left] : [left, right];
+    }
+    return [Math.max(1, Math.min(props.currentPage, total))];
   }, [props.currentPage, props.layout, slides.length]);
 
   return (

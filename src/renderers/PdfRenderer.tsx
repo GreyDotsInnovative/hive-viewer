@@ -1,12 +1,12 @@
-'use client';
+"use client";
 
 import {
   getDocument,
   GlobalWorkerOptions,
   type PDFDocumentProxy,
-} from 'pdfjs-dist';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { PageLayout } from '../types';
+} from "pdfjs-dist";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import type { PageLayout } from "../types";
 
 /**
  * PDF document renderer for DocumentViewer.
@@ -55,8 +55,8 @@ export function PdfRenderer(props: {
   useEffect(() => {
     try {
       GlobalWorkerOptions.workerSrc = new URL(
-        'pdfjs-dist/build/pdf.worker.min.mjs',
-        import .meta.url,
+        "pdfjs-dist/build/pdf.worker.min.mjs",
+        import.meta.url,
       ).toString();
     } catch {}
   }, []);
@@ -70,7 +70,7 @@ export function PdfRenderer(props: {
       setRendered(new Map());
       setThumbs([]);
       if (!url && !arrayBuffer) {
-        setError('No PDF source provided.');
+        setError("No PDF source provided.");
         setLoading(false);
         return;
       }
@@ -79,7 +79,9 @@ export function PdfRenderer(props: {
           url ? { url, rangeChunkSize: 512 * 1024 } : { data: arrayBuffer! },
         );
         const pdf = await task.promise;
-        if (cancel) { return; }
+        if (cancel) {
+          return;
+        }
         setDoc(pdf);
         setPageCount(pdf.numPages);
         props.onPageCount(pdf.numPages);
@@ -100,14 +102,14 @@ export function PdfRenderer(props: {
           const pageBase = page.getViewport({ scale: 1 });
           const thumbScale = thumbWidth / pageBase.width;
           const thumbVp = page.getViewport({ scale: thumbScale });
-          const thumbCanvas = document.createElement('canvas');
+          const thumbCanvas = document.createElement("canvas");
           thumbCanvas.width = Math.round(thumbVp.width);
           thumbCanvas.height = Math.round(thumbVp.height);
-          const thumbCtx = thumbCanvas.getContext('2d', { alpha: false });
+          const thumbCtx = thumbCanvas.getContext("2d", { alpha: false });
           if (thumbCtx) {
             await page.render({ canvasContext: thumbCtx, viewport: thumbVp })
               .promise;
-            thumbsArr.push(thumbCanvas.toDataURL('image/png'));
+            thumbsArr.push(thumbCanvas.toDataURL("image/png"));
           } else {
             thumbsArr.push(undefined);
           }
@@ -115,7 +117,7 @@ export function PdfRenderer(props: {
         setThumbs(thumbsArr);
       } catch (e) {
         setError(
-          'Failed to load PDF. ' + (e instanceof Error ? e.message : ''),
+          "Failed to load PDF. " + (e instanceof Error ? e.message : ""),
         );
       } finally {
         setLoading(false);
@@ -131,32 +133,42 @@ export function PdfRenderer(props: {
   }, [thumbs]);
 
   const pagesToShow = useMemo(() => {
-    if (props.layout === 'side-by-side') {
-      const left = props.currentPage;
-      const right = Math.min(pageCount || left + 1, left + 1);
-      return [left, right];
+    if (props.layout === "side-by-side" && pageCount > 1) {
+      const left = Math.max(1, Math.min(props.currentPage, pageCount));
+      const right = Math.max(1, Math.min(left + 1, pageCount));
+      return left === right ? [left] : [left, right];
     }
-    return [props.currentPage];
+    return [Math.max(1, Math.min(props.currentPage, pageCount))];
   }, [props.currentPage, props.layout, pageCount]);
 
   useEffect(() => {
-    if (!doc) { return; }
+    if (!doc) {
+      return;
+    }
     let cancel = false;
     (async () => {
       for (const p of pagesToShow) {
-        if (rendered.has(p)) { continue; }
+        if (rendered.has(p)) {
+          continue;
+        }
         try {
           const page = await doc.getPage(p);
-          if (cancel) { return; }
+          if (cancel) {
+            return;
+          }
           const base = page.getViewport({ scale: 1 });
           const vp = page.getViewport({ scale: size.w / base.width });
-          const canvas = document.createElement('canvas');
+          const canvas = document.createElement("canvas");
           canvas.width = Math.round(vp.width);
           canvas.height = Math.round(vp.height);
-          const ctx = canvas.getContext('2d', { alpha: false });
-          if (!ctx) { continue; }
+          const ctx = canvas.getContext("2d", { alpha: false });
+          if (!ctx) {
+            continue;
+          }
           await page.render({ canvasContext: ctx, viewport: vp }).promise;
-          if (cancel) { return; }
+          if (cancel) {
+            return;
+          }
           setRendered((prev) => {
             const next = new Map(prev);
             next.set(p, canvas);
@@ -171,10 +183,14 @@ export function PdfRenderer(props: {
   }, [doc, pagesToShow, size.w, rendered]);
 
   function onWheel(e: React.WheelEvent) {
-    if (!pageCount) { return; }
-    if (Math.abs(e.deltaY) < 10) { return; }
+    if (!pageCount) {
+      return;
+    }
+    if (Math.abs(e.deltaY) < 10) {
+      return;
+    }
     const dir = e.deltaY > 0 ? 1 : -1;
-    const step = props.layout === 'side-by-side' ? 2 : 1;
+    const step = props.layout === "side-by-side" ? 2 : 1;
     const next = Math.max(
       1,
       Math.min(pageCount, props.currentPage + dir * step),
@@ -184,7 +200,9 @@ export function PdfRenderer(props: {
 
   function clickPlace(e: React.MouseEvent, page: number) {
     const stamp = props.signatureStamp;
-    if (!stamp?.armed) { return; }
+    if (!stamp?.armed) {
+      return;
+    }
     const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
@@ -197,9 +215,9 @@ export function PdfRenderer(props: {
       {doc ? (
         <div
           className={
-            props.layout === 'side-by-side'
-              ? 'hv-pages hv-pages--two'
-              : 'hv-pages'
+            props.layout === "side-by-side"
+              ? "hv-pages hv-pages--two"
+              : "hv-pages"
           }
         >
           {pagesToShow.map((p) => {
@@ -217,9 +235,13 @@ export function PdfRenderer(props: {
                     width={c.width}
                     height={c.height}
                     ref={(node) => {
-                      if (!node) { return; }
-                      const ctx = node.getContext('2d');
-                      if (ctx) { ctx.drawImage(c, 0, 0); }
+                      if (!node) {
+                        return;
+                      }
+                      const ctx = node.getContext("2d");
+                      if (ctx) {
+                        ctx.drawImage(c, 0, 0);
+                      }
                     }}
                   />
                 ) : (
