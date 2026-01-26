@@ -8,7 +8,7 @@ interface Signature {
 }
 type PageLayout = 'single' | 'side-by-side';
 type DocumentMode = 'view' | 'edit' | 'create';
-type SupportedFileType = 'pdf' | 'md' | 'docx' | 'xlsx' | 'pptx' | 'txt' | 'png' | 'jpg' | 'svg';
+type SupportedFileType = 'pdf' | 'md' | 'docx' | 'doc' | 'xlsx' | 'pptx' | 'txt' | 'png' | 'jpg' | 'svg' | 'ppt' | 'csv' | 'xls' | 'xml';
 interface DocumentViewerSaveMeta {
     fileName: string;
     fileType: SupportedFileType;

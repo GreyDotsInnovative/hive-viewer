@@ -287,6 +287,7 @@ export function DocumentViewer(props: DocumentViewerProps) {
             ) : null}
 
             {resolved.fileType === "docx" ||
+            resolved.fileType === "doc" ||
             resolved.fileType === "md" ||
             resolved.fileType === "txt" ? (
               <RichTextEditor
@@ -303,12 +304,9 @@ export function DocumentViewer(props: DocumentViewerProps) {
                 signaturePlacements={sigPlacements}
                 onPageCount={(n: number) => {
                   setPageCount(n);
-                  setThumbs((prev) =>
-                    prev.length === n
-                      ? prev
-                      : Array.from({ length: n }, (_, i) => prev[i]),
-                  );
                 }}
+                onThumbs={(t: (string | undefined)[]) => setThumbs(t)}
+                layout={layout}
                 onSave={(b64: string, meta: DocumentViewerSaveMeta) =>
                   props.onSave?.(b64, meta)
                 }
@@ -317,7 +315,9 @@ export function DocumentViewer(props: DocumentViewerProps) {
               />
             ) : null}
 
-            {resolved.fileType === "xlsx" ? (
+            {resolved.fileType === "xlsx" ||
+            resolved.fileType === "csv" ||
+            resolved.fileType === "xls" ? (
               <SpreadsheetEditor
                 ref={editorRef as any}
                 mode={mode}
@@ -328,9 +328,10 @@ export function DocumentViewer(props: DocumentViewerProps) {
               />
             ) : null}
 
-            {resolved.fileType === "pptx" ? (
+            {resolved.fileType === "pptx" || resolved.fileType === "ppt" ? (
               <PptxRenderer
                 arrayBuffer={resolved.arrayBuffer}
+                fileName={resolved.fileName}
                 layout={layout}
                 currentPage={currentPage}
                 onCurrentPageChange={setCurrentPage}

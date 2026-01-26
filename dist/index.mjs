@@ -23,6 +23,7 @@ function sanitizeHtml(html) {
 }
 
 // src/editors/RichTextEditor.tsx
+import { Bold, Italic, Underline, Info } from "lucide-react";
 import { jsx, jsxs } from "react/jsx-runtime";
 var PAGE_H = 1122;
 var RichTextEditor = forwardRef(
@@ -88,6 +89,24 @@ var RichTextEditor = forwardRef(
         h: 0.1
       });
     }
+    const layout = props.layout ?? "single";
+    useEffect(() => {
+      if (!props.onPageCount || !props.onThumbs) return;
+      const timer = setTimeout(async () => {
+        const count = Math.max(
+          1,
+          Math.ceil((scrollerRef.current?.scrollHeight ?? 0) / PAGE_H)
+        );
+        props.onPageCount(count);
+        const newThumbs = [];
+        for (let i = 0; i < count; i++) {
+          const thumb = await requestThumbnail(i);
+          newThumbs.push(thumb);
+        }
+        props.onThumbs(newThumbs);
+      }, 1e3);
+      return () => clearTimeout(timer);
+    }, [props.arrayBuffer, props.fileType, props.onThumbs, layout]);
     async function requestThumbnail(index) {
       const scroller = scrollerRef.current;
       const capture = captureRef.current;
@@ -97,8 +116,10 @@ var RichTextEditor = forwardRef(
       await new Promise((r) => requestAnimationFrame(r));
       try {
         const canvas = await html2canvas(capture, {
-          scale: 0.25,
-          useCORS: true
+          scale: 0.1,
+          // Lower scale for thumbnails
+          useCORS: true,
+          logging: false
         });
         return canvas.toDataURL("image/png");
       } finally {
@@ -120,23 +141,93 @@ var RichTextEditor = forwardRef(
       save,
       requestThumbnail
     }));
-    return /* @__PURE__ */ jsxs("div", { className: "hv-root", children: [
-      /* @__PURE__ */ jsxs("div", { className: "hv-toolbar", children: [
-        /* @__PURE__ */ jsx("button", { onClick: () => exec("bold"), disabled: readOnly, children: "B" }),
-        /* @__PURE__ */ jsx("button", { onClick: () => exec("italic"), disabled: readOnly, children: "I" }),
-        /* @__PURE__ */ jsx("button", { onClick: () => exec("underline"), disabled: readOnly, children: "U" }),
-        props.armedSignatureUrl && /* @__PURE__ */ jsx("span", { className: "hv-hint", children: "Click page to place signature" })
+    const isSideBySide = layout === "side-by-side";
+    return /* @__PURE__ */ jsxs("div", { className: "flex flex-col h-full w-full bg-[#F8F9FA] overflow-hidden", children: [
+      /* @__PURE__ */ jsxs("div", { className: "flex items-center justify-between px-4 py-2 bg-white border-b border-gray-200 shadow-sm z-10", children: [
+        /* @__PURE__ */ jsxs("div", { className: "flex items-center space-x-1", children: [
+          /* @__PURE__ */ jsx(
+            ToolbarButton,
+            {
+              onClick: () => exec("bold"),
+              active: false,
+              disabled: readOnly,
+              icon: /* @__PURE__ */ jsx(Bold, { size: 18 })
+            }
+          ),
+          /* @__PURE__ */ jsx(
+            ToolbarButton,
+            {
+              onClick: () => exec("italic"),
+              active: false,
+              disabled: readOnly,
+              icon: /* @__PURE__ */ jsx(Italic, { size: 18 })
+            }
+          ),
+          /* @__PURE__ */ jsx(
+            ToolbarButton,
+            {
+              onClick: () => exec("underline"),
+              active: false,
+              disabled: readOnly,
+              icon: /* @__PURE__ */ jsx(Underline, { size: 18 })
+            }
+          )
+        ] }),
+        props.armedSignatureUrl && /* @__PURE__ */ jsxs("div", { className: "flex items-center text-blue-600 bg-blue-50 px-3 py-1 rounded-full text-sm font-medium animate-pulse", children: [
+          /* @__PURE__ */ jsx(Info, { size: 14, className: "mr-2" }),
+          "Click page to place signature"
+        ] })
       ] }),
-      /* @__PURE__ */ jsx("div", { className: "hv-scroll", ref: scrollerRef, onClick: onClickPage, children: /* @__PURE__ */ jsx("div", { className: "hv-pageStage", ref: captureRef, children: /* @__PURE__ */ jsx(
+      /* @__PURE__ */ jsx(
         "div",
         {
-          ref: editorRef,
-          className: `hv-editor ${readOnly ? "ro" : ""}`,
-          contentEditable: !readOnly,
-          suppressContentEditableWarning: true
+          className: "flex-1 overflow-y-auto overflow-x-hidden p-8 scroll-smooth",
+          ref: scrollerRef,
+          onClick: onClickPage,
+          style: { backgroundColor: "#E2E8F0" },
+          children: /* @__PURE__ */ jsx(
+            "div",
+            {
+              className: `${isSideBySide ? "max-w-[1680px]" : "max-w-[816px]"} mx-auto transition-all duration-300`,
+              children: /* @__PURE__ */ jsx(
+                "div",
+                {
+                  className: `bg-white shadow-[0_0_50px_rgba(0,0,0,0.1)] min-h-[1056px] origin-top mb-10 ${isSideBySide ? "columns-2 gap-12 p-[80px_60px]" : ""}`,
+                  ref: captureRef,
+                  children: /* @__PURE__ */ jsx(
+                    "div",
+                    {
+                      ref: editorRef,
+                      className: `modern-editor ${readOnly ? "ro" : "editable"}`,
+                      contentEditable: !readOnly,
+                      suppressContentEditableWarning: true,
+                      style: {
+                        padding: isSideBySide ? "0" : "80px 60px",
+                        // Standard document margins moved to parent in side-by-side
+                        outline: "none",
+                        minHeight: "1056px",
+                        fontSize: "16px",
+                        lineHeight: "1.6",
+                        color: "#1a1a1a"
+                      }
+                    }
+                  )
+                }
+              )
+            }
+          )
         }
-      ) }) })
+      )
     ] });
+  }
+);
+var ToolbarButton = ({ onClick, icon, disabled }) => /* @__PURE__ */ jsx(
+  "button",
+  {
+    onClick,
+    disabled,
+    className: "p-2 rounded hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors text-gray-700",
+    children: icon
   }
 );
 function escapeHtml(s) {
@@ -332,43 +423,127 @@ function ImageRenderer({
       }
     };
   }, [url]);
-  return /* @__PURE__ */ jsxs3("div", { className: "hv-doc", children: [
-    /* @__PURE__ */ jsxs3("div", { className: "hv-mini-toolbar", children: [
-      /* @__PURE__ */ jsx3("div", { className: "hv-title", children: fileName }),
-      /* @__PURE__ */ jsx3("div", { className: "hv-spacer" }),
-      /* @__PURE__ */ jsx3(
-        "button",
-        {
-          type: "button",
-          className: "hv-btn",
-          onClick: () => setZoom((z) => Math.max(0.25, z - 0.25)),
-          children: "-"
-        }
-      ),
-      /* @__PURE__ */ jsxs3("div", { className: "hv-zoom", children: [
-        Math.round(zoom * 100),
-        "%"
-      ] }),
-      /* @__PURE__ */ jsx3(
-        "button",
-        {
-          type: "button",
-          className: "hv-btn",
-          onClick: () => setZoom((z) => Math.min(4, z + 0.25)),
-          children: "+"
-        }
-      )
+  return /* @__PURE__ */ jsxs3("div", { className: "flex flex-col h-full bg-gray-50", children: [
+    /* @__PURE__ */ jsxs3("div", { className: "flex items-center justify-between px-6 py-4 bg-white border-b border-gray-200", children: [
+      /* @__PURE__ */ jsx3("h2", { className: "text-sm font-medium text-gray-700 truncate max-w-md", children: fileName }),
+      /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-3 bg-gray-100 rounded-lg p-1", children: [
+        /* @__PURE__ */ jsx3(
+          "button",
+          {
+            type: "button",
+            onClick: () => setZoom((z) => Math.max(0.25, z - 0.25)),
+            className: "w-9 h-9 flex items-center justify-center rounded-md bg-white hover:bg-gray-50 text-gray-700 transition-all shadow-sm hover:shadow",
+            "aria-label": "Zoom out",
+            children: /* @__PURE__ */ jsx3(
+              "svg",
+              {
+                className: "w-4 h-4",
+                fill: "none",
+                viewBox: "0 0 24 24",
+                stroke: "currentColor",
+                children: /* @__PURE__ */ jsx3(
+                  "path",
+                  {
+                    strokeLinecap: "round",
+                    strokeLinejoin: "round",
+                    strokeWidth: 2,
+                    d: "M20 12H4"
+                  }
+                )
+              }
+            )
+          }
+        ),
+        /* @__PURE__ */ jsxs3("span", { className: "text-sm font-semibold text-gray-700 min-w-[3.5rem] text-center px-2", children: [
+          Math.round(zoom * 100),
+          "%"
+        ] }),
+        /* @__PURE__ */ jsx3(
+          "button",
+          {
+            type: "button",
+            onClick: () => setZoom((z) => Math.min(4, z + 0.25)),
+            className: "w-9 h-9 flex items-center justify-center rounded-md bg-white hover:bg-gray-50 text-gray-700 transition-all shadow-sm hover:shadow",
+            "aria-label": "Zoom in",
+            children: /* @__PURE__ */ jsx3(
+              "svg",
+              {
+                className: "w-4 h-4",
+                fill: "none",
+                viewBox: "0 0 24 24",
+                stroke: "currentColor",
+                children: /* @__PURE__ */ jsx3(
+                  "path",
+                  {
+                    strokeLinecap: "round",
+                    strokeLinejoin: "round",
+                    strokeWidth: 2,
+                    d: "M12 4v16m8-8H4"
+                  }
+                )
+              }
+            )
+          }
+        )
+      ] })
     ] }),
-    /* @__PURE__ */ jsxs3("div", { className: "hv-center", children: [
-      !arrayBuffer && /* @__PURE__ */ jsx3("div", { className: "hv-error", children: "No image data provided." }),
-      arrayBuffer && !url && /* @__PURE__ */ jsx3("div", { className: "hv-error", children: "Failed to load image." }),
+    /* @__PURE__ */ jsxs3("div", { className: "flex-1 overflow-auto flex items-center justify-center p-8", children: [
+      !arrayBuffer && /* @__PURE__ */ jsxs3("div", { className: "text-center", children: [
+        /* @__PURE__ */ jsx3("div", { className: "w-16 h-16 mx-auto mb-3 rounded-full bg-gray-200 flex items-center justify-center", children: /* @__PURE__ */ jsx3(
+          "svg",
+          {
+            className: "w-8 h-8 text-gray-400",
+            fill: "none",
+            viewBox: "0 0 24 24",
+            stroke: "currentColor",
+            children: /* @__PURE__ */ jsx3(
+              "path",
+              {
+                strokeLinecap: "round",
+                strokeLinejoin: "round",
+                strokeWidth: 2,
+                d: "M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+              }
+            )
+          }
+        ) }),
+        /* @__PURE__ */ jsx3("p", { className: "text-sm text-gray-500", children: "No image data provided" })
+      ] }),
+      arrayBuffer && !url && /* @__PURE__ */ jsxs3("div", { className: "text-center", children: [
+        /* @__PURE__ */ jsx3("div", { className: "w-16 h-16 mx-auto mb-3 rounded-full bg-red-100 flex items-center justify-center", children: /* @__PURE__ */ jsx3(
+          "svg",
+          {
+            className: "w-8 h-8 text-red-500",
+            fill: "none",
+            viewBox: "0 0 24 24",
+            stroke: "currentColor",
+            children: /* @__PURE__ */ jsx3(
+              "path",
+              {
+                strokeLinecap: "round",
+                strokeLinejoin: "round",
+                strokeWidth: 2,
+                d: "M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+              }
+            )
+          }
+        ) }),
+        /* @__PURE__ */ jsx3("p", { className: "text-sm text-gray-600", children: "Failed to load image" })
+      ] }),
       url && /* @__PURE__ */ jsx3(
-        "img",
+        "div",
         {
-          src: url,
-          alt: fileName,
           style: { transform: `scale(${zoom})` },
-          className: "hv-image"
+          className: "transition-transform duration-200 origin-center",
+          children: /* @__PURE__ */ jsx3(
+            "img",
+            {
+              src: url,
+              alt: fileName,
+              style: { transform: `scale(${zoom})` },
+              className: "max-w-full h-auto rounded-lg shadow-lg transition-transform duration-200"
+            }
+          )
         }
       )
     ] })
@@ -585,11 +760,83 @@ function PdfRenderer(props) {
 import { useEffect as useEffect5, useMemo as useMemo5, useState as useState5 } from "react";
 import JSZip from "jszip";
 import { jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
-function decodeXml(s) {
-  return s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+var NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main";
+var NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+function parseColor(solidFill) {
+  if (!solidFill) return void 0;
+  const srgbClr = solidFill.getElementsByTagNameNS(NS_A, "srgbClr")[0];
+  if (srgbClr) {
+    const val = srgbClr.getAttribute("val");
+    return val ? `#${val}` : void 0;
+  }
+  const schemeClr = solidFill.getElementsByTagNameNS(NS_A, "schemeClr")[0];
+  if (schemeClr) {
+    const val = schemeClr.getAttribute("val");
+    const colorMap = {
+      tx1: "#000000",
+      bg1: "#FFFFFF",
+      tx2: "#1F1F1F",
+      accent1: "#4472C4",
+      accent2: "#ED7D31",
+      accent3: "#A5A5A5",
+      accent4: "#FFC000",
+      accent5: "#5B9BD5",
+      accent6: "#70AD47"
+    };
+    return colorMap[val || ""] || "#000000";
+  }
+  return void 0;
 }
-function extractText(xml) {
-  return [...xml.matchAll(/<a:t>(.*?)<\/a:t>/g)].map((m) => decodeXml(m[1] || "")).join(" ").trim();
+function parseSlideXml(xml) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xml, "application/xml");
+  const shapes = Array.from(doc.getElementsByTagNameNS(NS_P, "sp"));
+  let title;
+  let titleColor;
+  const body = [];
+  let bgColor;
+  const bgElements = doc.getElementsByTagNameNS(NS_P, "bg");
+  if (bgElements.length > 0) {
+    const bgPr = bgElements[0].getElementsByTagNameNS(NS_P, "bgPr")[0];
+    if (bgPr) {
+      const solidFill = bgPr.getElementsByTagNameNS(NS_A, "solidFill")[0];
+      bgColor = parseColor(solidFill);
+    }
+  }
+  shapes.forEach((shape) => {
+    const nvSpPr = shape.getElementsByTagNameNS(NS_P, "nvSpPr")[0];
+    const cNvPr = nvSpPr?.getElementsByTagNameNS(NS_P, "cNvPr")[0];
+    const name = cNvPr?.getAttribute("name")?.toLowerCase() || "";
+    const txBody = shape.getElementsByTagNameNS(NS_P, "txBody")[0];
+    if (!txBody) return;
+    const paragraphs = Array.from(txBody.getElementsByTagNameNS(NS_A, "p"));
+    const isTitle = name.includes("title") || name.includes("header") || name.includes("centeredtitle");
+    paragraphs.forEach((p) => {
+      const runs = Array.from(p.getElementsByTagNameNS(NS_A, "r"));
+      runs.forEach((run) => {
+        const textEl = run.getElementsByTagNameNS(NS_A, "t")[0];
+        const text = textEl?.textContent?.trim() || "";
+        if (!text) return;
+        const rPr = run.getElementsByTagNameNS(NS_A, "rPr")[0];
+        let color;
+        let isBold = false;
+        let isItalic = false;
+        if (rPr) {
+          isBold = rPr.getAttribute("b") === "1";
+          isItalic = rPr.getAttribute("i") === "1";
+          const solidFill = rPr.getElementsByTagNameNS(NS_A, "solidFill")[0];
+          color = parseColor(solidFill);
+        }
+        if (isTitle && !title) {
+          title = text;
+          titleColor = color;
+        } else {
+          body.push({ text, color, isBold, isItalic });
+        }
+      });
+    });
+  });
+  return { title, titleColor, body, bgColor };
 }
 function PptxRenderer(props) {
   const [slides, setSlides] = useState5([]);
@@ -604,7 +851,7 @@ function PptxRenderer(props) {
       setSlides([]);
       setThumbs([]);
       if (!props.arrayBuffer) {
-        setError("No PPTX source provided.");
+        setError("No PowerPoint source provided.");
         setLoading(false);
         return;
       }
@@ -614,14 +861,14 @@ function PptxRenderer(props) {
         const slidesOut = [];
         for (let i = 0; i < slidePaths.length; i++) {
           const xml = await zip.files[slidePaths[i]].async("string");
-          slidesOut.push({ index: i + 1, text: extractText(xml) });
+          const parsed = parseSlideXml(xml);
+          slidesOut.push({ index: i + 1, ...parsed });
         }
         if (cancel) return;
         setSlides(
-          slidesOut.length ? slidesOut : [{ index: 1, text: "(empty)" }]
+          slidesOut.length ? slidesOut : [{ index: 1, title: "Empty Slide", body: [] }]
         );
         props.onSlideCount(slidesOut.length || 1);
-        const thumbWidth = 56;
         const thumbsArr = [];
         for (let i = 0; i < (slidesOut.length || 1); i++) {
           thumbsArr.push(
@@ -631,7 +878,11 @@ function PptxRenderer(props) {
         setThumbs(thumbsArr);
       } catch (e) {
         setSlides([
-          { index: 1, text: "Unable to render this .pptx in-browser." }
+          {
+            index: 1,
+            title: "Error Rendering Presentation",
+            body: [{ text: "Unable to render this .pptx in-browser." }]
+          }
         ]);
         setThumbs([void 0]);
         setError(
@@ -657,39 +908,170 @@ function PptxRenderer(props) {
     }
     return [Math.max(1, Math.min(props.currentPage, total))];
   }, [props.currentPage, props.layout, slides.length]);
-  return /* @__PURE__ */ jsxs5("div", { className: "hv-doc", children: [
-    loading && /* @__PURE__ */ jsx5("div", { className: "hv-loading", children: "Loading PPTX\u2026" }),
-    error && /* @__PURE__ */ jsx5("div", { className: "hv-error", children: error }),
-    !loading && !error && (!slides || slides.length === 0) && /* @__PURE__ */ jsx5("div", { className: "hv-error", children: "No slides to display." }),
-    !error && slides && slides.length > 0 && /* @__PURE__ */ jsx5(
-      "div",
-      {
-        className: props.layout === "side-by-side" ? "hv-pages hv-pages--two" : "hv-pages",
-        children: pagesToShow.map((p) => {
-          const s = slides[p - 1];
-          return /* @__PURE__ */ jsxs5(
-            "div",
-            {
-              className: "hv-slide",
-              tabIndex: 0,
-              onFocus: () => props.onCurrentPageChange(p),
-              children: [
-                /* @__PURE__ */ jsxs5("div", { className: "hv-slide-title", children: [
-                  "Slide ",
-                  p
-                ] }),
-                /* @__PURE__ */ jsx5("div", { className: "hv-slide-text", children: s?.text || "" })
-              ]
-            },
-            p
-          );
-        })
-      }
-    )
+  return /* @__PURE__ */ jsxs5("div", { className: "flex flex-col h-full bg-gradient-to-br from-slate-50 via-slate-100 to-slate-50 overflow-hidden", children: [
+    /* @__PURE__ */ jsxs5("div", { className: "flex items-center justify-between px-8 py-5 bg-white/80 backdrop-blur-xl border-b border-slate-200/60 shadow-sm z-10", children: [
+      /* @__PURE__ */ jsxs5("div", { className: "flex items-center gap-4", children: [
+        /* @__PURE__ */ jsx5("div", { className: "w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20", children: /* @__PURE__ */ jsxs5(
+          "svg",
+          {
+            xmlns: "http://www.w3.org/2000/svg",
+            viewBox: "0 0 24 24",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: "2",
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+            className: "w-5 h-5 text-white",
+            children: [
+              /* @__PURE__ */ jsx5("path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }),
+              /* @__PURE__ */ jsx5("path", { d: "M14 2v4a2 2 0 0 0 2 2h4" }),
+              /* @__PURE__ */ jsx5("path", { d: "M10 9H8" }),
+              /* @__PURE__ */ jsx5("path", { d: "M16 13H8" }),
+              /* @__PURE__ */ jsx5("path", { d: "M16 17H8" })
+            ]
+          }
+        ) }),
+        /* @__PURE__ */ jsxs5("div", { className: "flex flex-col", children: [
+          /* @__PURE__ */ jsx5("h2", { className: "text-base font-bold text-slate-800 truncate max-w-sm", children: props.fileName || "Presentation" }),
+          /* @__PURE__ */ jsxs5("span", { className: "text-xs text-slate-500 font-medium", children: [
+            "PowerPoint \u2022 ",
+            slides.length,
+            " ",
+            slides.length === 1 ? "slide" : "slides"
+          ] })
+        ] })
+      ] }),
+      loading && /* @__PURE__ */ jsxs5("div", { className: "flex items-center gap-3 px-4 py-2 bg-blue-50 rounded-full border border-blue-100", children: [
+        /* @__PURE__ */ jsx5(
+          "svg",
+          {
+            xmlns: "http://www.w3.org/2000/svg",
+            viewBox: "0 0 24 24",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: "2",
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+            className: "w-4 h-4 text-blue-600 animate-spin",
+            children: /* @__PURE__ */ jsx5("path", { d: "M12 2v20M2 12h20" })
+          }
+        ),
+        /* @__PURE__ */ jsx5("span", { className: "text-sm font-medium text-blue-700", children: "Processing..." })
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxs5("div", { className: "flex-1 overflow-y-auto p-8 md:p-12 scroll-smooth", children: [
+      error && /* @__PURE__ */ jsx5("div", { className: "max-w-md mx-auto mt-24", children: /* @__PURE__ */ jsxs5("div", { className: "bg-white rounded-2xl shadow-xl border border-red-100 p-8 text-center", children: [
+        /* @__PURE__ */ jsx5("div", { className: "w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center shadow-lg shadow-red-500/20", children: /* @__PURE__ */ jsx5(
+          "svg",
+          {
+            xmlns: "http://www.w3.org/2000/svg",
+            viewBox: "0 0 24 24",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: "2",
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+            className: "w-8 h-8 text-white",
+            children: /* @__PURE__ */ jsx5("path", { d: "M12 2v20M2 12h20" })
+          }
+        ) }),
+        /* @__PURE__ */ jsx5("h3", { className: "text-xl font-bold text-slate-900 mb-2", children: "Unable to Load Presentation" }),
+        /* @__PURE__ */ jsx5("p", { className: "text-sm text-slate-600 leading-relaxed", children: error })
+      ] }) }),
+      !error && slides.length > 0 && /* @__PURE__ */ jsx5("div", { className: "flex flex-col items-center gap-16 max-w-7xl mx-auto", children: pagesToShow.map((p) => {
+        const s = slides[p - 1];
+        const bgColor = s?.bgColor || "#FFFFFF";
+        return /* @__PURE__ */ jsx5(
+          "div",
+          {
+            className: "w-full group",
+            onFocus: () => props.onCurrentPageChange(p),
+            tabIndex: 0,
+            children: /* @__PURE__ */ jsxs5(
+              "div",
+              {
+                className: "relative bg-white shadow-2xl rounded-2xl border border-slate-200/60 overflow-hidden aspect-[16/9] flex flex-col p-12 md:p-20 transition-all duration-500 group-hover:shadow-[0_25px_60px_-15px_rgba(0,0,0,0.2)] group-hover:scale-[1.01]",
+                style: { backgroundColor: bgColor },
+                children: [
+                  /* @__PURE__ */ jsx5("div", { className: "absolute top-6 right-6", children: /* @__PURE__ */ jsx5("div", { className: "px-4 py-1.5 rounded-full bg-slate-900/90 backdrop-blur-sm border border-slate-700/50 shadow-lg", children: /* @__PURE__ */ jsxs5("span", { className: "text-xs font-bold text-white tracking-wider", children: [
+                    p,
+                    " / ",
+                    slides.length
+                  ] }) }) }),
+                  /* @__PURE__ */ jsx5("div", { className: "absolute top-0 left-0 w-32 h-32 bg-gradient-to-br from-blue-500/5 to-transparent rounded-br-full" }),
+                  /* @__PURE__ */ jsx5("div", { className: "absolute bottom-0 right-0 w-32 h-32 bg-gradient-to-tl from-indigo-500/5 to-transparent rounded-tl-full" }),
+                  /* @__PURE__ */ jsxs5("div", { className: "flex-1 flex flex-col justify-center max-w-5xl mx-auto w-full relative z-10", children: [
+                    s?.title && /* @__PURE__ */ jsx5(
+                      "h1",
+                      {
+                        className: "text-4xl md:text-6xl font-black mb-12 leading-[1.1] tracking-tight",
+                        style: { color: s.titleColor || "#0F172A" },
+                        children: s.title
+                      }
+                    ),
+                    /* @__PURE__ */ jsx5("div", { className: "space-y-5", children: s?.body.map((item, idx) => /* @__PURE__ */ jsxs5(
+                      "div",
+                      {
+                        className: "flex items-start gap-5 group/item",
+                        children: [
+                          /* @__PURE__ */ jsx5(
+                            "div",
+                            {
+                              className: "mt-3 w-2 h-2 rounded-full flex-shrink-0 shadow-sm",
+                              style: {
+                                backgroundColor: item.color || "#94A3B8"
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx5(
+                            "p",
+                            {
+                              className: `text-xl md:text-2xl leading-relaxed transition-all ${item.isBold ? "font-bold" : "font-medium"} ${item.isItalic ? "italic" : ""}`,
+                              style: { color: item.color || "#475569" },
+                              children: item.text
+                            }
+                          )
+                        ]
+                      },
+                      idx
+                    )) }),
+                    !s?.title && (!s?.body || s?.body.length === 0) && /* @__PURE__ */ jsxs5("div", { className: "flex-1 flex flex-col items-center justify-center opacity-30 py-16", children: [
+                      /* @__PURE__ */ jsx5("div", { className: "w-20 h-20 mb-6 rounded-2xl bg-slate-200 flex items-center justify-center", children: /* @__PURE__ */ jsxs5(
+                        "svg",
+                        {
+                          xmlns: "http://www.w3.org/2000/svg",
+                          viewBox: "0 0 24 24",
+                          fill: "none",
+                          stroke: "currentColor",
+                          strokeWidth: "2",
+                          strokeLinecap: "round",
+                          strokeLinejoin: "round",
+                          className: "w-10 h-10 text-slate-400",
+                          children: [
+                            /* @__PURE__ */ jsx5("path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }),
+                            /* @__PURE__ */ jsx5("path", { d: "M14 2v4a2 2 0 0 0 2 2h4" }),
+                            /* @__PURE__ */ jsx5("path", { d: "M10 9H8" }),
+                            /* @__PURE__ */ jsx5("path", { d: "M16 13H8" }),
+                            /* @__PURE__ */ jsx5("path", { d: "M16 17H8" })
+                          ]
+                        }
+                      ) }),
+                      /* @__PURE__ */ jsx5("p", { className: "text-slate-400 text-lg italic", children: "No content on this slide" })
+                    ] })
+                  ] }),
+                  /* @__PURE__ */ jsx5("div", { className: "absolute bottom-8 left-8 opacity-10", children: /* @__PURE__ */ jsx5("div", { className: "text-sm font-black text-slate-900 tracking-wider", children: props.fileName?.split(".")[0].toUpperCase() || "PRESENTATION" }) })
+                ]
+              }
+            )
+          },
+          p
+        );
+      }) })
+    ] })
   ] });
 }
 function svgThumb(n) {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="180" height="100"><rect width="100%" height="100%" rx="12" fill="#111827"/><text x="50%" y="54%" font-size="18" fill="#e5e7eb" text-anchor="middle">${n}</text></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="180" height="100"><defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#4F46E5;stop-opacity:1" /><stop offset="100%" style="stop-color:#7C3AED;stop-opacity:1" /></linearGradient></defs><rect width="100%" height="100%" rx="12" fill="url(#bg)"/><text x="50%" y="58%" font-size="24" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${n}</text></svg>`;
 }
 
 // src/utils/locale.ts
@@ -840,49 +1222,46 @@ function Toolbar(props) {
       role: "toolbar",
       "aria-label": t("a11y.toolbar", "Document toolbar"),
       children: [
-        /* @__PURE__ */ jsxs8("div", { className: "hv-toolbar__left space-x-1", children: [
+        /* @__PURE__ */ jsxs8("div", { className: "hv-toolbar__group", children: [
           /* @__PURE__ */ jsx8(
             "button",
             {
-              type: "button",
-              className: "hv-btn text-sm",
+              className: `hv-btn ${props.showThumbnails ? "hv-btn--active" : ""}`,
               onClick: props.onToggleThumbnails,
               "aria-pressed": props.showThumbnails,
-              children: t("toolbar.thumbs", "Thumbnails")
+              children: "Thumbnails"
             }
           ),
           props.mode !== "create" && /* @__PURE__ */ jsx8(
             "button",
             {
-              type: "button",
-              className: "hv-btn text-sm",
+              className: `hv-btn ${props.showSignatures ? "hv-btn--active" : ""}`,
               onClick: props.onToggleSignatures,
               "aria-pressed": props.showSignatures,
-              children: t("toolbar.signatures", "Signatures")
-            }
-          ),
-          /* @__PURE__ */ jsx8("span", { className: "hv-sep" }),
-          /* @__PURE__ */ jsx8(
-            "button",
-            {
-              type: "button",
-              className: props.layout === "single" ? "hv-btn hv-btn--active text-sm" : "hv-btn text-sm",
-              onClick: () => props.onChangeLayout("single"),
-              children: t("toolbar.layout.single", "Single")
-            }
-          ),
-          /* @__PURE__ */ jsx8(
-            "button",
-            {
-              type: "button",
-              className: props.layout === "side-by-side" ? "hv-btn hv-btn--active text-sm" : "hv-btn text-sm",
-              onClick: () => props.onChangeLayout("side-by-side"),
-              children: t("toolbar.layout.two", "Two")
+              children: "Signatures"
             }
           )
         ] }),
-        /* @__PURE__ */ jsxs8("div", { className: "hv-toolbar__right", children: [
-          props.showHeaderFooterToggle && /* @__PURE__ */ jsxs8("label", { className: "hv-toggle", children: [
+        /* @__PURE__ */ jsxs8("div", { className: "hv-toolbar__group hv-segment", children: [
+          /* @__PURE__ */ jsx8(
+            "button",
+            {
+              className: `hv-btn ${props.layout === "single" ? "hv-btn--active" : ""}`,
+              onClick: () => props.onChangeLayout("single"),
+              children: "Single page"
+            }
+          ),
+          /* @__PURE__ */ jsx8(
+            "button",
+            {
+              className: `hv-btn ${props.layout === "side-by-side" ? "hv-btn--active" : ""}`,
+              onClick: () => props.onChangeLayout("side-by-side"),
+              children: "Side-by-side"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ jsxs8("div", { className: "hv-toolbar__group hv-toolbar__actions", children: [
+          props.showHeaderFooterToggle && /* @__PURE__ */ jsxs8("label", { className: "hv-switch", children: [
             /* @__PURE__ */ jsx8(
               "input",
               {
@@ -891,36 +1270,20 @@ function Toolbar(props) {
                 onChange: props.onToggleHeaderFooter
               }
             ),
-            /* @__PURE__ */ jsx8("span", { children: t("toolbar.letterhead", "Letterhead") })
+            /* @__PURE__ */ jsx8("span", { className: "hv-switch__slider" }),
+            /* @__PURE__ */ jsx8("span", { className: "hv-switch__label", children: t("toolbar.letterhead", "Letterhead") })
           ] }),
           props.allowSigning && /* @__PURE__ */ jsx8(
             "button",
             {
-              type: "button",
-              className: "hv-btn hv-btn--primary text-sm",
+              className: "hv-btn hv-btn--primary",
               onClick: props.onSign,
               disabled: props.signingDisabled,
-              children: t("toolbar.sign", "Sign Document")
+              children: "Sign document"
             }
           ),
-          props.canExportPdf && /* @__PURE__ */ jsx8(
-            "button",
-            {
-              type: "button",
-              className: "hv-btn text-sm",
-              onClick: props.onExportPdf,
-              children: t("toolbar.exportPdf", "Export as PDF")
-            }
-          ),
-          props.canSave && /* @__PURE__ */ jsx8(
-            "button",
-            {
-              type: "button",
-              className: "hv-btn hv-btn--primary text-sm",
-              onClick: props.onSave,
-              children: t("toolbar.save", "Save")
-            }
-          )
+          props.canExportPdf && /* @__PURE__ */ jsx8("button", { className: "hv-btn", onClick: props.onExportPdf, children: "Export PDF" }),
+          props.canSave && /* @__PURE__ */ jsx8("button", { className: "hv-btn hv-btn--primary", onClick: props.onSave, children: "Save" })
         ] })
       ]
     }
@@ -1127,7 +1490,7 @@ function DocumentViewer(props) {
             } : void 0
           }
         ) : null,
-        resolved.fileType === "docx" || resolved.fileType === "md" || resolved.fileType === "txt" ? /* @__PURE__ */ jsx9(
+        resolved.fileType === "docx" || resolved.fileType === "doc" || resolved.fileType === "md" || resolved.fileType === "txt" ? /* @__PURE__ */ jsx9(
           RichTextEditor,
           {
             ref: editorRef,
@@ -1143,16 +1506,15 @@ function DocumentViewer(props) {
             signaturePlacements: sigPlacements,
             onPageCount: (n) => {
               setPageCount(n);
-              setThumbs(
-                (prev) => prev.length === n ? prev : Array.from({ length: n }, (_, i) => prev[i])
-              );
             },
+            onThumbs: (t) => setThumbs(t),
+            layout,
             onSave: (b64, meta) => props.onSave?.(b64, meta),
             armedSignatureUrl,
             onPlaceSignature: placeSignature
           }
         ) : null,
-        resolved.fileType === "xlsx" ? /* @__PURE__ */ jsx9(
+        resolved.fileType === "xlsx" || resolved.fileType === "csv" || resolved.fileType === "xls" ? /* @__PURE__ */ jsx9(
           SpreadsheetEditor,
           {
             ref: editorRef,
@@ -1163,10 +1525,11 @@ function DocumentViewer(props) {
             onSave: (b64, meta) => props.onSave?.(b64, meta)
           }
         ) : null,
-        resolved.fileType === "pptx" ? /* @__PURE__ */ jsx9(
+        resolved.fileType === "pptx" || resolved.fileType === "ppt" ? /* @__PURE__ */ jsx9(
           PptxRenderer,
           {
             arrayBuffer: resolved.arrayBuffer,
+            fileName: resolved.fileName,
             layout,
             currentPage,
             onCurrentPageChange: setCurrentPage,
@@ -1212,4 +1575,4 @@ function arrayBufferToBase642(ab) {
 export {
   DocumentViewer
 };
-//# sourceMappingURL=index.js.map
+//# sourceMappingURL=index.mjs.map

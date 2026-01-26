@@ -1,2 +1,8 @@
-node_modules
-dist
+# dependencies
+/node_modules
+/dist
+
+# environment variables
+.env
+.DS_Store
+coverage
