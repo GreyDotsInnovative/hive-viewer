@@ -1,30 +1,248 @@
 // src/components/DocumentViewer.tsx
 import { useEffect as useEffect6, useMemo as useMemo6, useRef as useRef3, useState as useState6 } from "react";
 
-// src/utils/locale.ts
-var defaultLocale = {
-  loading: "Loading\u2026",
-  "error.title": "Error",
-  "toolbar.layout.single": "Single page",
-  "toolbar.layout.two": "Side-by-side",
-  "toolbar.thumbs": "Thumbnails",
-  "toolbar.signatures": "Signatures",
-  "toolbar.sign": "Sign Document",
-  "toolbar.save": "Save",
-  "toolbar.exportPdf": "Export as PDF",
-  "thumbnails.title": "Thumbnails",
-  "thumbnails.page": "Page",
-  "signatures.title": "Signatures",
-  "signatures.empty": "No signatures",
-  "signatures.placeHint": "Click on the document to place the signature.",
-  "a11y.viewer": "Document viewer",
-  "a11y.ribbon": "Ribbon",
-  "a11y.editor": "Document editor"
-};
+// src/editors/RichTextEditor.tsx
+import html2canvas from "html2canvas";
+import mammoth from "mammoth";
+import MarkdownIt from "markdown-it";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef
+} from "react";
+
+// src/utils/sanitize.ts
+import DOMPurify from "dompurify";
+function sanitizeHtml(html) {
+  return DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    ADD_ATTR: ["target", "rel"]
+  });
+}
+
+// src/editors/RichTextEditor.tsx
+import { Bold, Italic, Underline, Info } from "lucide-react";
+import { jsx, jsxs } from "react/jsx-runtime";
+var PAGE_H = 1122;
+var RichTextEditor = forwardRef(
+  (props, ref) => {
+    const readOnly = props.mode === "view";
+    const md = useMemo(
+      () => new MarkdownIt({ html: false, linkify: true, breaks: true }),
+      []
+    );
+    const scrollerRef = useRef(null);
+    const editorRef = useRef(null);
+    const captureRef = useRef(null);
+    const initialized = useRef(false);
+    useEffect(() => {
+      if (initialized.current) return;
+      (async () => {
+        if (props.mode === "create") {
+          editorRef.current.innerHTML = "<p><br/></p>";
+          initialized.current = true;
+          return;
+        }
+        if (!props.arrayBuffer) return;
+        if (props.fileType === "docx") {
+          const res = await mammoth.convertToHtml({
+            arrayBuffer: props.arrayBuffer
+          });
+          editorRef.current.innerHTML = sanitizeHtml(
+            res.value || "<p><br/></p>"
+          );
+        } else {
+          const text = new TextDecoder().decode(props.arrayBuffer);
+          editorRef.current.innerHTML = props.fileType === "md" ? sanitizeHtml(md.render(text)) : `<pre>${escapeHtml(text)}</pre>`;
+        }
+        initialized.current = true;
+      })();
+    }, [props.arrayBuffer, props.fileType, props.mode, md]);
+    useEffect(() => {
+      const el = scrollerRef.current;
+      if (!el) return;
+      const recompute = () => props.onPageCount(Math.max(1, Math.ceil(el.scrollHeight / PAGE_H)));
+      recompute();
+      const ro = new ResizeObserver(recompute);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }, [props.headerFooterEnabled]);
+    function exec(cmd) {
+      if (readOnly) return;
+      document.execCommand(cmd);
+      editorRef.current?.focus();
+    }
+    function onClickPage(e) {
+      if (!props.armedSignatureUrl) return;
+      const scroller = scrollerRef.current;
+      if (!scroller) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const absY = scroller.scrollTop + (e.clientY - rect.top);
+      const page = Math.floor(absY / PAGE_H) + 1;
+      props.onPlaceSignature({
+        page,
+        x: (e.clientX - rect.left) / rect.width,
+        y: absY % PAGE_H / PAGE_H,
+        w: 0.25,
+        h: 0.1
+      });
+    }
+    const layout = props.layout ?? "single";
+    useEffect(() => {
+      if (!props.onPageCount || !props.onThumbs) return;
+      const timer = setTimeout(async () => {
+        const count = Math.max(
+          1,
+          Math.ceil((scrollerRef.current?.scrollHeight ?? 0) / PAGE_H)
+        );
+        props.onPageCount(count);
+        const newThumbs = [];
+        for (let i = 0; i < count; i++) {
+          const thumb = await requestThumbnail(i);
+          newThumbs.push(thumb);
+        }
+        props.onThumbs(newThumbs);
+      }, 1e3);
+      return () => clearTimeout(timer);
+    }, [props.arrayBuffer, props.fileType, props.onThumbs, layout]);
+    async function requestThumbnail(index) {
+      const scroller = scrollerRef.current;
+      const capture = captureRef.current;
+      if (!scroller || !capture) return;
+      const old = scroller.scrollTop;
+      scroller.scrollTop = index * PAGE_H;
+      await new Promise((r) => requestAnimationFrame(r));
+      try {
+        const canvas = await html2canvas(capture, {
+          scale: 0.1,
+          // Lower scale for thumbnails
+          useCORS: true,
+          logging: false
+        });
+        return canvas.toDataURL("image/png");
+      } finally {
+        scroller.scrollTop = old;
+      }
+    }
+    async function save(exportPdf) {
+      const html = editorRef.current?.innerHTML ?? "";
+      const stitched = `<!doctype html><html><body>${html}</body></html>`;
+      const b64 = btoa(unescape(encodeURIComponent(stitched)));
+      props.onSave(b64, {
+        fileName: props.fileName,
+        fileType: props.fileType,
+        exportedAsPdf: exportPdf,
+        annotations: { signaturePlacements: props.signaturePlacements }
+      });
+    }
+    useImperativeHandle(ref, () => ({
+      save,
+      requestThumbnail
+    }));
+    const isSideBySide = layout === "side-by-side";
+    return /* @__PURE__ */ jsxs("div", { className: "flex flex-col h-full w-full bg-[#F8F9FA] overflow-hidden", children: [
+      /* @__PURE__ */ jsxs("div", { className: "flex items-center justify-between px-4 py-2 bg-white border-b border-gray-200 shadow-sm z-10", children: [
+        /* @__PURE__ */ jsxs("div", { className: "flex items-center space-x-1", children: [
+          /* @__PURE__ */ jsx(
+            ToolbarButton,
+            {
+              onClick: () => exec("bold"),
+              active: false,
+              disabled: readOnly,
+              icon: /* @__PURE__ */ jsx(Bold, { size: 18 })
+            }
+          ),
+          /* @__PURE__ */ jsx(
+            ToolbarButton,
+            {
+              onClick: () => exec("italic"),
+              active: false,
+              disabled: readOnly,
+              icon: /* @__PURE__ */ jsx(Italic, { size: 18 })
+            }
+          ),
+          /* @__PURE__ */ jsx(
+            ToolbarButton,
+            {
+              onClick: () => exec("underline"),
+              active: false,
+              disabled: readOnly,
+              icon: /* @__PURE__ */ jsx(Underline, { size: 18 })
+            }
+          )
+        ] }),
+        props.armedSignatureUrl && /* @__PURE__ */ jsxs("div", { className: "flex items-center text-blue-600 bg-blue-50 px-3 py-1 rounded-full text-sm font-medium animate-pulse", children: [
+          /* @__PURE__ */ jsx(Info, { size: 14, className: "mr-2" }),
+          "Click page to place signature"
+        ] })
+      ] }),
+      /* @__PURE__ */ jsx(
+        "div",
+        {
+          className: "flex-1 overflow-y-auto overflow-x-hidden p-8 scroll-smooth",
+          ref: scrollerRef,
+          onClick: onClickPage,
+          style: { backgroundColor: "#E2E8F0" },
+          children: /* @__PURE__ */ jsx(
+            "div",
+            {
+              className: `${isSideBySide ? "max-w-[1680px]" : "max-w-[816px]"} mx-auto transition-all duration-300`,
+              children: /* @__PURE__ */ jsx(
+                "div",
+                {
+                  className: `bg-white shadow-[0_0_50px_rgba(0,0,0,0.1)] min-h-[1056px] origin-top mb-10 ${isSideBySide ? "columns-2 gap-12 p-[80px_60px]" : ""}`,
+                  ref: captureRef,
+                  children: /* @__PURE__ */ jsx(
+                    "div",
+                    {
+                      ref: editorRef,
+                      className: `modern-editor ${readOnly ? "ro" : "editable"}`,
+                      contentEditable: !readOnly,
+                      suppressContentEditableWarning: true,
+                      style: {
+                        padding: isSideBySide ? "0" : "80px 60px",
+                        // Standard document margins moved to parent in side-by-side
+                        outline: "none",
+                        minHeight: "1056px",
+                        fontSize: "16px",
+                        lineHeight: "1.6",
+                        color: "#1a1a1a"
+                      }
+                    }
+                  )
+                }
+              )
+            }
+          )
+        }
+      )
+    ] });
+  }
+);
+var ToolbarButton = ({ onClick, icon, disabled }) => /* @__PURE__ */ jsx(
+  "button",
+  {
+    onClick,
+    disabled,
+    className: "p-2 rounded hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors text-gray-700",
+    children: icon
+  }
+);
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+
+// src/editors/SpreadsheetEditor.tsx
+import { forwardRef as forwardRef2, useEffect as useEffect2, useImperativeHandle as useImperativeHandle2, useMemo as useMemo2, useState as useState2 } from "react";
+import * as XLSX from "xlsx";
 
 // src/utils/fileSource.ts
 function guessFileType(name, explicit) {
-  if (explicit) return explicit;
+  if (explicit) {
+    return explicit;
+  }
   const ext = (name?.split(".").pop() || "").toLowerCase();
   const allowed = [
     "pdf",
@@ -52,7 +270,9 @@ async function base64ToArrayBuffer(b64) {
   const bin = atob(b64);
   const len = bin.length;
   const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = bin.charCodeAt(i);
+  }
   return bytes.buffer;
 }
 async function resolveSource(args) {
@@ -67,10 +287,13 @@ async function resolveSource(args) {
     const ab = await base64ToArrayBuffer(args.base64);
     return { fileType, fileName, arrayBuffer: ab };
   }
-  if (!args.fileUrl)
+  if (!args.fileUrl) {
     throw new Error("No file source provided. Use fileUrl, blob, or base64.");
+  }
   const res = await fetch(args.fileUrl);
-  if (!res.ok) throw new Error(`Failed to fetch file (${res.status})`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch file (${res.status})`);
+  }
   const total = Number(res.headers.get("content-length") || "") || void 0;
   if (!res.body) {
     const ab = await res.arrayBuffer();
@@ -82,7 +305,9 @@ async function resolveSource(args) {
   let loaded = 0;
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      break;
+    }
     if (value) {
       chunks.push(value);
       loaded += value.length;
@@ -98,510 +323,15 @@ async function resolveSource(args) {
   return { fileType, fileName, arrayBuffer: out.buffer, url: args.fileUrl };
 }
 
-// src/components/Toolbar.tsx
-import { jsx, jsxs } from "react/jsx-runtime";
-function Toolbar(props) {
-  const t = (k, fallback) => props.locale[k] ?? fallback;
-  return /* @__PURE__ */ jsxs("div", { className: "hv-toolbar", role: "toolbar", "aria-label": t("a11y.toolbar", "Document toolbar"), children: [
-    /* @__PURE__ */ jsxs("div", { className: "hv-toolbar__left", children: [
-      /* @__PURE__ */ jsx("button", { type: "button", className: "hv-btn", onClick: props.onToggleThumbnails, "aria-pressed": props.showThumbnails, children: t("toolbar.thumbs", "Thumbnails") }),
-      props.mode !== "create" && /* @__PURE__ */ jsx("button", { type: "button", className: "hv-btn", onClick: props.onToggleSignatures, "aria-pressed": props.showSignatures, children: t("toolbar.signatures", "Signatures") }),
-      /* @__PURE__ */ jsx("span", { className: "hv-sep" }),
-      /* @__PURE__ */ jsx("button", { type: "button", className: props.layout === "single" ? "hv-btn hv-btn--active" : "hv-btn", onClick: () => props.onChangeLayout("single"), children: t("toolbar.layout.single", "Single") }),
-      /* @__PURE__ */ jsx("button", { type: "button", className: props.layout === "side-by-side" ? "hv-btn hv-btn--active" : "hv-btn", onClick: () => props.onChangeLayout("side-by-side"), children: t("toolbar.layout.two", "Two") })
-    ] }),
-    /* @__PURE__ */ jsxs("div", { className: "hv-toolbar__right", children: [
-      props.showHeaderFooterToggle && /* @__PURE__ */ jsxs("label", { className: "hv-toggle", children: [
-        /* @__PURE__ */ jsx("input", { type: "checkbox", checked: props.headerFooterEnabled, onChange: props.onToggleHeaderFooter }),
-        /* @__PURE__ */ jsx("span", { children: t("toolbar.letterhead", "Letterhead") })
-      ] }),
-      props.allowSigning && /* @__PURE__ */ jsx("button", { type: "button", className: "hv-btn hv-btn--primary", onClick: props.onSign, disabled: props.signingDisabled, children: t("toolbar.sign", "Sign Document") }),
-      props.canExportPdf && /* @__PURE__ */ jsx("button", { type: "button", className: "hv-btn", onClick: props.onExportPdf, children: t("toolbar.exportPdf", "Export as PDF") }),
-      props.canSave && /* @__PURE__ */ jsx("button", { type: "button", className: "hv-btn hv-btn--primary", onClick: props.onSave, children: t("toolbar.save", "Save") })
-    ] })
-  ] });
-}
-
-// src/components/ThumbnailsSidebar.tsx
-import { jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
-function ThumbnailsSidebar(props) {
-  const t = props.locale["thumbnails.title"] ?? "Thumbnails";
-  return /* @__PURE__ */ jsxs2("aside", { className: props.collapsed ? "hv-thumbs hv-thumbs--collapsed" : "hv-thumbs", "aria-label": t, children: [
-    /* @__PURE__ */ jsxs2("div", { className: "hv-thumbs__header", children: [
-      /* @__PURE__ */ jsx2(
-        "button",
-        {
-          type: "button",
-          className: "hv-icon",
-          onClick: props.onToggle,
-          "aria-label": props.collapsed ? props.locale["thumbnails.open"] ?? "Open thumbnails" : props.locale["thumbnails.close"] ?? "Close thumbnails",
-          children: props.collapsed ? "\u25B8" : "\u25BE"
-        }
-      ),
-      !props.collapsed ? /* @__PURE__ */ jsx2("div", { className: "hv-thumbs__title", children: t }) : null
-    ] }),
-    !props.collapsed ? /* @__PURE__ */ jsx2("div", { className: "hv-thumbs__list", role: "list", children: props.thumbnails.map((th, idx) => {
-      const p = idx + 1;
-      const active = p === props.currentPage;
-      return /* @__PURE__ */ jsxs2(
-        "button",
-        {
-          type: "button",
-          role: "listitem",
-          className: active ? "hv-thumb hv-thumb--active" : "hv-thumb",
-          onClick: () => props.onSelectPage(p),
-          "aria-current": active ? "page" : void 0,
-          children: [
-            /* @__PURE__ */ jsx2("div", { className: "hv-thumb__img", "aria-hidden": true, children: th.dataUrl ? /* @__PURE__ */ jsx2("img", { src: th.dataUrl, alt: "" }) : /* @__PURE__ */ jsx2("div", { className: "hv-thumb__placeholder" }) }),
-            /* @__PURE__ */ jsx2("div", { className: "hv-thumb__label", children: th.label })
-          ]
-        },
-        th.id
-      );
-    }) }) : null
-  ] });
-}
-
-// src/components/SignaturePanel.tsx
-import { jsx as jsx3, jsxs as jsxs3 } from "react/jsx-runtime";
-function SignaturePanel(props) {
-  const title = props.locale["signatures.title"] ?? "Signatures";
-  return /* @__PURE__ */ jsxs3("aside", { className: props.collapsed ? "hv-side hv-side--collapsed" : "hv-side", "aria-label": title, children: [
-    /* @__PURE__ */ jsxs3("div", { className: "hv-sidebar-header", children: [
-      /* @__PURE__ */ jsx3("button", { type: "button", className: "hv-icon", onClick: props.onToggle, "aria-label": props.locale["toolbar.signatures"] ?? "Signatures", children: "\u270D" }),
-      /* @__PURE__ */ jsx3("div", { className: "hv-sidebar-title", children: title })
-    ] }),
-    /* @__PURE__ */ jsx3("div", { className: "hv-sidebar-body", children: props.signatures.map((s, idx) => /* @__PURE__ */ jsxs3("div", { className: "hv-signature-card", children: [
-      /* @__PURE__ */ jsx3("img", { src: s.signatureImageUrl, alt: `Signature by ${s.signedBy}`, className: "hv-signature-img" }),
-      /* @__PURE__ */ jsxs3("div", { className: "hv-signature-meta", children: [
-        /* @__PURE__ */ jsx3("div", { className: "hv-signature-name", children: s.signedBy }),
-        /* @__PURE__ */ jsx3("div", { className: "hv-signature-date", children: new Date(s.dateSigned).toLocaleString() }),
-        s.comment ? /* @__PURE__ */ jsx3("div", { className: "hv-signature-comment", children: s.comment }) : null
-      ] })
-    ] }, `${s.signedBy}-${s.dateSigned}-${idx}`)) })
-  ] });
-}
-
-// src/renderers/PdfRenderer.tsx
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  GlobalWorkerOptions,
-  getDocument
-} from "pdfjs-dist";
-import { jsx as jsx4, jsxs as jsxs4 } from "react/jsx-runtime";
-function PdfRenderer(props) {
-  const { url, arrayBuffer } = props;
-  const [doc, setDoc] = useState(null);
-  const [pageCount, setPageCount] = useState(0);
-  const [rendered, setRendered] = useState(
-    /* @__PURE__ */ new Map()
-  );
-  const [thumbs, setThumbs] = useState([]);
-  const [size, setSize] = useState({ w: 840, h: 1188 });
-  const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const containerRef = useRef(null);
-  useEffect(() => {
-    try {
-      GlobalWorkerOptions.workerSrc = new URL(
-        "pdfjs-dist/build/pdf.worker.min.mjs",
-        import.meta.url
-      ).toString();
-    } catch {
-    }
-  }, []);
-  useEffect(() => {
-    let cancel = false;
-    setError(null);
-    setLoading(true);
-    (async () => {
-      setDoc(null);
-      setRendered(/* @__PURE__ */ new Map());
-      setThumbs([]);
-      if (!url && !arrayBuffer) {
-        setError("No PDF source provided.");
-        setLoading(false);
-        return;
-      }
-      try {
-        const task = getDocument(
-          url ? { url, rangeChunkSize: 512 * 1024 } : { data: arrayBuffer }
-        );
-        const pdf = await task.promise;
-        if (cancel) return;
-        setDoc(pdf);
-        setPageCount(pdf.numPages);
-        props.onPageCount(pdf.numPages);
-        setThumbs(Array.from({ length: pdf.numPages }));
-        const p1 = await pdf.getPage(1);
-        const base = p1.getViewport({ scale: 1 });
-        const w = Math.min(980, Math.max(640, base.width));
-        const s = w / base.width;
-        const vp = p1.getViewport({ scale: s });
-        setSize({ w: Math.round(vp.width), h: Math.round(vp.height) });
-      } catch (e) {
-        setError(
-          "Failed to load PDF. " + (e instanceof Error ? e.message : "")
-        );
-      } finally {
-        setLoading(false);
-      }
-    })();
-    return () => {
-      cancel = true;
-    };
-  }, [url, arrayBuffer]);
-  useEffect(() => {
-    props.onThumbs(thumbs);
-  }, [thumbs]);
-  const pagesToShow = useMemo(() => {
-    if (props.layout === "side-by-side") {
-      const left = props.currentPage;
-      const right = Math.min(pageCount || left + 1, left + 1);
-      return [left, right];
-    }
-    return [props.currentPage];
-  }, [props.currentPage, props.layout, pageCount]);
-  useEffect(() => {
-    if (!doc) return;
-    let cancel = false;
-    (async () => {
-      for (const p of pagesToShow) {
-        if (rendered.has(p)) continue;
-        try {
-          const page = await doc.getPage(p);
-          if (cancel) return;
-          const base = page.getViewport({ scale: 1 });
-          const vp = page.getViewport({ scale: size.w / base.width });
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.round(vp.width);
-          canvas.height = Math.round(vp.height);
-          const ctx = canvas.getContext("2d", { alpha: false });
-          if (!ctx) continue;
-          await page.render({ canvasContext: ctx, viewport: vp }).promise;
-          if (cancel) return;
-          setRendered((prev) => {
-            const next = new Map(prev);
-            next.set(p, canvas);
-            return next;
-          });
-          if (!thumbs[p - 1]) {
-            const thumbCanvas = document.createElement("canvas");
-            const thumbScale = 120 / vp.width;
-            thumbCanvas.width = Math.round(vp.width * thumbScale);
-            thumbCanvas.height = Math.round(vp.height * thumbScale);
-            const thumbCtx = thumbCanvas.getContext("2d", { alpha: false });
-            if (thumbCtx) {
-              thumbCtx.drawImage(
-                canvas,
-                0,
-                0,
-                thumbCanvas.width,
-                thumbCanvas.height
-              );
-              setThumbs((prev) => {
-                const arr = prev.slice();
-                arr[p - 1] = thumbCanvas.toDataURL("image/png");
-                return arr;
-              });
-            }
-          }
-        } catch {
-        }
-      }
-    })();
-    return () => {
-      cancel = true;
-    };
-  }, [doc, pagesToShow, size.w, rendered, thumbs]);
-  function onWheel(e) {
-    if (!pageCount) return;
-    if (Math.abs(e.deltaY) < 10) return;
-    const dir = e.deltaY > 0 ? 1 : -1;
-    const step = props.layout === "side-by-side" ? 2 : 1;
-    const next = Math.max(
-      1,
-      Math.min(pageCount, props.currentPage + dir * step)
-    );
-    props.onCurrentPageChange(next);
-  }
-  function clickPlace(e, page) {
-    const stamp = props.signatureStamp;
-    if (!stamp?.armed) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    stamp.onPlaced({ page, x, y, w: 0.22, h: 0.08 });
-  }
-  return /* @__PURE__ */ jsxs4("div", { className: "hv-doc", ref: containerRef, onWheel, children: [
-    !doc ? /* @__PURE__ */ jsx4("div", { className: "hv-loading", children: "Loading PDF\u2026" }) : null,
-    doc ? /* @__PURE__ */ jsx4(
-      "div",
-      {
-        className: props.layout === "side-by-side" ? "hv-pages hv-pages--two" : "hv-pages",
-        children: pagesToShow.map((p) => {
-          const c = rendered.get(p);
-          return /* @__PURE__ */ jsx4(
-            "div",
-            {
-              className: "hv-page",
-              style: { width: size.w, height: size.h },
-              onClick: (e) => clickPlace(e, p),
-              children: c ? /* @__PURE__ */ jsx4(
-                "canvas",
-                {
-                  className: "hv-canvas",
-                  width: c.width,
-                  height: c.height,
-                  ref: (node) => {
-                    if (!node) return;
-                    const ctx = node.getContext("2d");
-                    if (ctx) ctx.drawImage(c, 0, 0);
-                  }
-                }
-              ) : /* @__PURE__ */ jsx4("div", { className: "hv-loading", children: "Rendering\u2026" })
-            },
-            p
-          );
-        })
-      }
-    ) : null
-  ] });
-}
-
-// src/editors/RichTextEditor.tsx
-import {
-  forwardRef,
-  useEffect as useEffect2,
-  useImperativeHandle,
-  useMemo as useMemo2,
-  useRef as useRef2,
-  useState as useState2
-} from "react";
-import mammoth from "mammoth";
-import MarkdownIt from "markdown-it";
-import html2canvas from "html2canvas";
-
-// src/utils/sanitize.ts
-import DOMPurify from "dompurify";
-function sanitizeHtml(html) {
-  return DOMPurify.sanitize(html, {
-    USE_PROFILES: { html: true },
-    ADD_ATTR: ["target", "rel"]
-  });
-}
-
-// src/editors/RichTextEditor.tsx
-import { jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
-var PAGE_H = 1122;
-var RichTextEditor = forwardRef((props, ref) => {
-  const readOnly = props.mode === "view";
-  const md = useMemo2(
-    () => new MarkdownIt({ html: false, linkify: true, breaks: true }),
-    []
-  );
-  const scrollerRef = useRef2(null);
-  const editorRef = useRef2(null);
-  const captureRef = useRef2(null);
-  const [html, setHtml] = useState2("<p><br/></p>");
-  useEffect2(() => {
-    let cancelled = false;
-    (async () => {
-      if (props.mode === "create") {
-        setHtml("<p><br/></p>");
-        return;
-      }
-      if (!props.arrayBuffer) return;
-      if (props.fileType === "docx") {
-        const res = await mammoth.convertToHtml({
-          arrayBuffer: props.arrayBuffer
-        });
-        if (!cancelled) setHtml(sanitizeHtml(res.value || "<p><br/></p>"));
-      } else {
-        const text = new TextDecoder().decode(props.arrayBuffer);
-        if (props.fileType === "md") setHtml(sanitizeHtml(md.render(text)));
-        else setHtml(`<pre>${escapeHtml(text)}</pre>`);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [props.arrayBuffer, props.fileType, props.mode, md]);
-  useEffect2(() => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    const recompute = () => props.onPageCount(Math.max(1, Math.ceil(el.scrollHeight / PAGE_H)));
-    recompute();
-    const ro = new ResizeObserver(recompute);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [html, props.headerFooterEnabled]);
-  function exec(cmd) {
-    if (readOnly) return;
-    document.execCommand(cmd);
-  }
-  function onClick(e) {
-    if (!props.armedSignatureUrl) return;
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const absY = scroller.scrollTop + (e.clientY - rect.top);
-    const page = Math.max(1, Math.floor(absY / PAGE_H) + 1);
-    const pageTop = (page - 1) * PAGE_H;
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (absY - pageTop) / PAGE_H;
-    props.onPlaceSignature({ page, x, y, w: 0.25, h: 0.1 });
-  }
-  async function requestThumbnail(index) {
-    const scroller = scrollerRef.current;
-    const capture = captureRef.current;
-    if (!scroller || !capture) return void 0;
-    const old = scroller.scrollTop;
-    scroller.scrollTop = index * PAGE_H;
-    await new Promise((r) => requestAnimationFrame(() => r(null)));
-    try {
-      const canvas = await html2canvas(capture, {
-        backgroundColor: null,
-        scale: 0.25,
-        useCORS: true
-      });
-      return canvas.toDataURL("image/png");
-    } catch {
-      return void 0;
-    } finally {
-      scroller.scrollTop = old;
-    }
-  }
-  async function save(exportPdf) {
-    const inner = editorRef.current?.innerHTML ?? html;
-    const stitched = `<!doctype html><html><head><meta charset="utf-8" /></head><body>${inner}</body></html>`;
-    if (exportPdf) {
-      const b642 = btoa(unescape(encodeURIComponent(stitched)));
-      props.onSave(b642, {
-        fileName: replaceExt(props.fileName, "html"),
-        fileType: "txt",
-        exportedAsPdf: true,
-        annotations: { signaturePlacements: props.signaturePlacements }
-      });
-      return;
-    }
-    if (props.fileType === "docx") {
-      try {
-        const response = await fetch("/api/export-docx", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            html: stitched,
-            fileName: replaceExt(props.fileName, "docx")
-          })
-        });
-        if (!response.ok) throw new Error("Failed to generate DOCX");
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = replaceExt(props.fileName, "docx");
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => {
-          window.URL.revokeObjectURL(url);
-          a.remove();
-        }, 100);
-      } catch (err) {
-        alert(
-          "DOCX export failed: " + (err instanceof Error ? err.message : String(err))
-        );
-      }
-      return;
-    }
-    const text = editorRef.current?.innerText ?? "";
-    const b64 = btoa(unescape(encodeURIComponent(text)));
-    props.onSave(b64, {
-      fileName: replaceExt(props.fileName, props.fileType),
-      fileType: props.fileType,
-      annotations: { signaturePlacements: props.signaturePlacements }
-    });
-  }
-  useImperativeHandle(ref, () => ({ save, requestThumbnail }));
-  return /* @__PURE__ */ jsxs5("div", { className: "hv-doc", children: [
-    /* @__PURE__ */ jsxs5("div", { className: "hv-ribbon", role: "toolbar", children: [
-      /* @__PURE__ */ jsx5(
-        "button",
-        {
-          className: "hv-btn",
-          onClick: () => exec("bold"),
-          disabled: readOnly,
-          children: "B"
-        }
-      ),
-      /* @__PURE__ */ jsx5(
-        "button",
-        {
-          className: "hv-btn",
-          onClick: () => exec("italic"),
-          disabled: readOnly,
-          children: "I"
-        }
-      ),
-      /* @__PURE__ */ jsx5(
-        "button",
-        {
-          className: "hv-btn",
-          onClick: () => exec("underline"),
-          disabled: readOnly,
-          children: "U"
-        }
-      ),
-      props.armedSignatureUrl ? /* @__PURE__ */ jsx5("div", { className: "hv-hint", children: "Click to place signature" }) : null
-    ] }),
-    /* @__PURE__ */ jsx5("div", { className: "hv-scroll", ref: scrollerRef, onClick, children: /* @__PURE__ */ jsxs5("div", { className: "hv-pageStage", ref: captureRef, children: [
-      props.headerFooterEnabled && props.headerComponent ? /* @__PURE__ */ jsx5("div", { className: "hv-letterhead", children: props.headerComponent }) : null,
-      /* @__PURE__ */ jsx5(
-        "div",
-        {
-          ref: editorRef,
-          className: readOnly ? "hv-editor hv-editor--ro" : "hv-editor",
-          contentEditable: !readOnly,
-          suppressContentEditableWarning: true,
-          onInput: () => setHtml(editorRef.current?.innerHTML ?? ""),
-          dangerouslySetInnerHTML: { __html: html }
-        }
-      ),
-      props.headerFooterEnabled && props.footerComponent ? /* @__PURE__ */ jsx5("div", { className: "hv-letterhead hv-letterhead--footer", children: props.footerComponent }) : null,
-      props.mode === "create" && props.signatures.length ? /* @__PURE__ */ jsx5("div", { className: "hv-signatures-inline", children: props.signatures.map((s, i) => /* @__PURE__ */ jsxs5("div", { className: "hv-sign-inline", children: [
-        /* @__PURE__ */ jsx5(
-          "img",
-          {
-            src: s.signatureImageUrl,
-            alt: "",
-            className: "hv-sign-img"
-          }
-        ),
-        /* @__PURE__ */ jsxs5("div", { children: [
-          /* @__PURE__ */ jsx5("div", { className: "hv-sign-name", children: s.signedBy }),
-          /* @__PURE__ */ jsx5("div", { className: "hv-sign-date", children: new Date(s.dateSigned).toLocaleString() })
-        ] })
-      ] }, i)) }) : null
-    ] }) })
-  ] });
-});
-function replaceExt(name, ext) {
-  const base = name.includes(".") ? name.slice(0, name.lastIndexOf(".")) : name;
-  return `${base}.${ext}`;
-}
-function escapeHtml(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 // src/editors/SpreadsheetEditor.tsx
-import { forwardRef as forwardRef2, useEffect as useEffect3, useImperativeHandle as useImperativeHandle2, useMemo as useMemo3, useState as useState3 } from "react";
-import * as XLSX from "xlsx";
-import { jsx as jsx6, jsxs as jsxs6 } from "react/jsx-runtime";
+import { jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
 var SpreadsheetEditor = forwardRef2(function SpreadsheetEditor2(props, ref) {
   const readonly = props.mode === "view";
-  const [grid, setGrid] = useState3(() => Array.from({ length: 30 }, () => Array.from({ length: 12 }, () => "")));
-  useEffect3(() => {
-    if (!props.arrayBuffer) return;
+  const [grid, setGrid] = useState2(() => Array.from({ length: 30 }, () => Array.from({ length: 12 }, () => "")));
+  useEffect2(() => {
+    if (!props.arrayBuffer) {
+      return;
+    }
     try {
       const wb = XLSX.read(props.arrayBuffer, { type: "array" });
       const name = wb.SheetNames[0];
@@ -629,20 +359,20 @@ var SpreadsheetEditor = forwardRef2(function SpreadsheetEditor2(props, ref) {
     save,
     requestThumbnails: async () => void 0
   }));
-  const cols = useMemo3(() => Array.from({ length: grid[0]?.length ?? 0 }, (_, i) => String.fromCharCode(65 + i % 26)), [grid]);
-  return /* @__PURE__ */ jsxs6("div", { className: "hv-sheet", children: [
-    /* @__PURE__ */ jsxs6("div", { className: "hv-sheetbar", children: [
-      /* @__PURE__ */ jsx6("div", { className: "hv-sheetbar-title", children: props.fileName }),
-      !readonly ? /* @__PURE__ */ jsx6("button", { className: "hv-btn", type: "button", onClick: () => void save(false), children: props.locale["toolbar.save"] ?? "Save" }) : null
+  const cols = useMemo2(() => Array.from({ length: grid[0]?.length ?? 0 }, (_, i) => String.fromCharCode(65 + i % 26)), [grid]);
+  return /* @__PURE__ */ jsxs2("div", { className: "hv-sheet", children: [
+    /* @__PURE__ */ jsxs2("div", { className: "hv-sheetbar", children: [
+      /* @__PURE__ */ jsx2("div", { className: "hv-sheetbar-title", children: props.fileName }),
+      !readonly ? /* @__PURE__ */ jsx2("button", { className: "hv-btn", type: "button", onClick: () => void save(false), children: props.locale["toolbar.save"] ?? "Save" }) : null
     ] }),
-    /* @__PURE__ */ jsxs6("div", { className: "hv-sheetgrid", role: "table", "aria-label": "Spreadsheet", children: [
-      /* @__PURE__ */ jsxs6("div", { className: "hv-sheetrow hv-sheetrow--header", role: "row", children: [
-        /* @__PURE__ */ jsx6("div", { className: "hv-sheetcell hv-sheetcell--corner", role: "columnheader" }),
-        cols.map((c, i) => /* @__PURE__ */ jsx6("div", { className: "hv-sheetcell hv-sheetcell--header", role: "columnheader", children: c }, i))
+    /* @__PURE__ */ jsxs2("div", { className: "hv-sheetgrid", role: "table", "aria-label": "Spreadsheet", children: [
+      /* @__PURE__ */ jsxs2("div", { className: "hv-sheetrow hv-sheetrow--header", role: "row", children: [
+        /* @__PURE__ */ jsx2("div", { className: "hv-sheetcell hv-sheetcell--corner", role: "columnheader" }),
+        cols.map((c, i) => /* @__PURE__ */ jsx2("div", { className: "hv-sheetcell hv-sheetcell--header", role: "columnheader", children: c }, i))
       ] }),
-      grid.map((row, r) => /* @__PURE__ */ jsxs6("div", { className: "hv-sheetrow", role: "row", children: [
-        /* @__PURE__ */ jsx6("div", { className: "hv-sheetcell hv-sheetcell--header", role: "rowheader", children: r + 1 }),
-        row.map((val, c) => /* @__PURE__ */ jsx6(
+      grid.map((row, r) => /* @__PURE__ */ jsxs2("div", { className: "hv-sheetrow", role: "row", children: [
+        /* @__PURE__ */ jsx2("div", { className: "hv-sheetcell hv-sheetcell--header", role: "rowheader", children: r + 1 }),
+        row.map((val, c) => /* @__PURE__ */ jsx2(
           "div",
           {
             className: "hv-sheetcell",
@@ -671,76 +401,442 @@ function ensureExt(name, ext) {
 }
 
 // src/renderers/ImageRenderer.tsx
-import { useEffect as useEffect4, useMemo as useMemo4, useState as useState4 } from "react";
-import { jsx as jsx7, jsxs as jsxs7 } from "react/jsx-runtime";
+import { useEffect as useEffect3, useMemo as useMemo3, useState as useState3 } from "react";
+import { jsx as jsx3, jsxs as jsxs3 } from "react/jsx-runtime";
 function ImageRenderer({
   arrayBuffer,
   fileType,
   fileName
 }) {
-  const [zoom, setZoom] = useState4(1);
-  const url = useMemo4(() => {
-    if (!arrayBuffer) return void 0;
+  const [zoom, setZoom] = useState3(1);
+  const url = useMemo3(() => {
+    if (!arrayBuffer) {
+      return void 0;
+    }
     const mime = fileType === "svg" ? "image/svg+xml" : fileType === "png" ? "image/png" : "image/jpeg";
     return URL.createObjectURL(new Blob([arrayBuffer], { type: mime }));
   }, [arrayBuffer, fileType]);
-  useEffect4(() => {
+  useEffect3(() => {
     return () => {
-      if (url) URL.revokeObjectURL(url);
+      if (url) {
+        URL.revokeObjectURL(url);
+      }
     };
   }, [url]);
-  return /* @__PURE__ */ jsxs7("div", { className: "hv-doc", children: [
-    /* @__PURE__ */ jsxs7("div", { className: "hv-mini-toolbar", children: [
-      /* @__PURE__ */ jsx7("div", { className: "hv-title", children: fileName }),
-      /* @__PURE__ */ jsx7("div", { className: "hv-spacer" }),
-      /* @__PURE__ */ jsx7(
-        "button",
-        {
-          type: "button",
-          className: "hv-btn",
-          onClick: () => setZoom((z) => Math.max(0.25, z - 0.25)),
-          children: "-"
-        }
-      ),
-      /* @__PURE__ */ jsxs7("div", { className: "hv-zoom", children: [
-        Math.round(zoom * 100),
-        "%"
-      ] }),
-      /* @__PURE__ */ jsx7(
-        "button",
-        {
-          type: "button",
-          className: "hv-btn",
-          onClick: () => setZoom((z) => Math.min(4, z + 0.25)),
-          children: "+"
-        }
-      )
+  return /* @__PURE__ */ jsxs3("div", { className: "flex flex-col h-full bg-gray-50", children: [
+    /* @__PURE__ */ jsxs3("div", { className: "flex items-center justify-between px-6 py-4 bg-white border-b border-gray-200", children: [
+      /* @__PURE__ */ jsx3("h2", { className: "text-sm font-medium text-gray-700 truncate max-w-md", children: fileName }),
+      /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-3 bg-gray-100 rounded-lg p-1", children: [
+        /* @__PURE__ */ jsx3(
+          "button",
+          {
+            type: "button",
+            onClick: () => setZoom((z) => Math.max(0.25, z - 0.25)),
+            className: "w-9 h-9 flex items-center justify-center rounded-md bg-white hover:bg-gray-50 text-gray-700 transition-all shadow-sm hover:shadow",
+            "aria-label": "Zoom out",
+            children: /* @__PURE__ */ jsx3(
+              "svg",
+              {
+                className: "w-4 h-4",
+                fill: "none",
+                viewBox: "0 0 24 24",
+                stroke: "currentColor",
+                children: /* @__PURE__ */ jsx3(
+                  "path",
+                  {
+                    strokeLinecap: "round",
+                    strokeLinejoin: "round",
+                    strokeWidth: 2,
+                    d: "M20 12H4"
+                  }
+                )
+              }
+            )
+          }
+        ),
+        /* @__PURE__ */ jsxs3("span", { className: "text-sm font-semibold text-gray-700 min-w-[3.5rem] text-center px-2", children: [
+          Math.round(zoom * 100),
+          "%"
+        ] }),
+        /* @__PURE__ */ jsx3(
+          "button",
+          {
+            type: "button",
+            onClick: () => setZoom((z) => Math.min(4, z + 0.25)),
+            className: "w-9 h-9 flex items-center justify-center rounded-md bg-white hover:bg-gray-50 text-gray-700 transition-all shadow-sm hover:shadow",
+            "aria-label": "Zoom in",
+            children: /* @__PURE__ */ jsx3(
+              "svg",
+              {
+                className: "w-4 h-4",
+                fill: "none",
+                viewBox: "0 0 24 24",
+                stroke: "currentColor",
+                children: /* @__PURE__ */ jsx3(
+                  "path",
+                  {
+                    strokeLinecap: "round",
+                    strokeLinejoin: "round",
+                    strokeWidth: 2,
+                    d: "M12 4v16m8-8H4"
+                  }
+                )
+              }
+            )
+          }
+        )
+      ] })
     ] }),
-    /* @__PURE__ */ jsxs7("div", { className: "hv-center", children: [
-      !arrayBuffer && /* @__PURE__ */ jsx7("div", { className: "hv-error", children: "No image data provided." }),
-      arrayBuffer && !url && /* @__PURE__ */ jsx7("div", { className: "hv-error", children: "Failed to load image." }),
-      url && /* @__PURE__ */ jsx7(
-        "img",
+    /* @__PURE__ */ jsxs3("div", { className: "flex-1 overflow-auto flex items-center justify-center p-8", children: [
+      !arrayBuffer && /* @__PURE__ */ jsxs3("div", { className: "text-center", children: [
+        /* @__PURE__ */ jsx3("div", { className: "w-16 h-16 mx-auto mb-3 rounded-full bg-gray-200 flex items-center justify-center", children: /* @__PURE__ */ jsx3(
+          "svg",
+          {
+            className: "w-8 h-8 text-gray-400",
+            fill: "none",
+            viewBox: "0 0 24 24",
+            stroke: "currentColor",
+            children: /* @__PURE__ */ jsx3(
+              "path",
+              {
+                strokeLinecap: "round",
+                strokeLinejoin: "round",
+                strokeWidth: 2,
+                d: "M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+              }
+            )
+          }
+        ) }),
+        /* @__PURE__ */ jsx3("p", { className: "text-sm text-gray-500", children: "No image data provided" })
+      ] }),
+      arrayBuffer && !url && /* @__PURE__ */ jsxs3("div", { className: "text-center", children: [
+        /* @__PURE__ */ jsx3("div", { className: "w-16 h-16 mx-auto mb-3 rounded-full bg-red-100 flex items-center justify-center", children: /* @__PURE__ */ jsx3(
+          "svg",
+          {
+            className: "w-8 h-8 text-red-500",
+            fill: "none",
+            viewBox: "0 0 24 24",
+            stroke: "currentColor",
+            children: /* @__PURE__ */ jsx3(
+              "path",
+              {
+                strokeLinecap: "round",
+                strokeLinejoin: "round",
+                strokeWidth: 2,
+                d: "M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+              }
+            )
+          }
+        ) }),
+        /* @__PURE__ */ jsx3("p", { className: "text-sm text-gray-600", children: "Failed to load image" })
+      ] }),
+      url && /* @__PURE__ */ jsx3(
+        "div",
         {
-          src: url,
-          alt: fileName,
           style: { transform: `scale(${zoom})` },
-          className: "hv-image"
+          className: "transition-transform duration-200 origin-center",
+          children: /* @__PURE__ */ jsx3(
+            "img",
+            {
+              src: url,
+              alt: fileName,
+              style: { transform: `scale(${zoom})` },
+              className: "max-w-full h-auto rounded-lg shadow-lg transition-transform duration-200"
+            }
+          )
         }
       )
     ] })
   ] });
 }
 
+// src/renderers/PdfRenderer.tsx
+import {
+  getDocument,
+  GlobalWorkerOptions
+} from "pdfjs-dist";
+import { useEffect as useEffect4, useMemo as useMemo4, useRef as useRef2, useState as useState4 } from "react";
+import { jsx as jsx4, jsxs as jsxs4 } from "react/jsx-runtime";
+function PdfRenderer(props) {
+  const { url, arrayBuffer } = props;
+  const [doc, setDoc] = useState4(null);
+  const [pageCount, setPageCount] = useState4(0);
+  const [rendered, setRendered] = useState4(
+    /* @__PURE__ */ new Map()
+  );
+  const [thumbs, setThumbs] = useState4([]);
+  const [size, setSize] = useState4({ w: 840, h: 1188 });
+  const [error, setError] = useState4(null);
+  const [loading, setLoading] = useState4(false);
+  const containerRef = useRef2(null);
+  useEffect4(() => {
+    try {
+      GlobalWorkerOptions.workerSrc = new URL(
+        "pdfjs-dist/build/pdf.worker.min.mjs",
+        import.meta.url
+      ).toString();
+    } catch {
+    }
+  }, []);
+  useEffect4(() => {
+    let cancel = false;
+    setError(null);
+    setLoading(true);
+    (async () => {
+      setDoc(null);
+      setRendered(/* @__PURE__ */ new Map());
+      setThumbs([]);
+      if (!url && !arrayBuffer) {
+        setError("No PDF source provided.");
+        setLoading(false);
+        return;
+      }
+      try {
+        const task = getDocument(
+          url ? { url, rangeChunkSize: 512 * 1024 } : { data: arrayBuffer }
+        );
+        const pdf = await task.promise;
+        if (cancel) {
+          return;
+        }
+        setDoc(pdf);
+        setPageCount(pdf.numPages);
+        props.onPageCount(pdf.numPages);
+        const p1 = await pdf.getPage(1);
+        const base = p1.getViewport({ scale: 1 });
+        const w = Math.min(980, Math.max(640, base.width));
+        const s = w / base.width;
+        const vp = p1.getViewport({ scale: s });
+        setSize({ w: Math.round(vp.width), h: Math.round(vp.height) });
+        const thumbWidth = 56;
+        const thumbsArr = [];
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const pageBase = page.getViewport({ scale: 1 });
+          const thumbScale = thumbWidth / pageBase.width;
+          const thumbVp = page.getViewport({ scale: thumbScale });
+          const thumbCanvas = document.createElement("canvas");
+          thumbCanvas.width = Math.round(thumbVp.width);
+          thumbCanvas.height = Math.round(thumbVp.height);
+          const thumbCtx = thumbCanvas.getContext("2d", { alpha: false });
+          if (thumbCtx) {
+            await page.render({ canvasContext: thumbCtx, viewport: thumbVp }).promise;
+            thumbsArr.push(thumbCanvas.toDataURL("image/png"));
+          } else {
+            thumbsArr.push(void 0);
+          }
+        }
+        setThumbs(thumbsArr);
+      } catch (e) {
+        setError(
+          "Failed to load PDF. " + (e instanceof Error ? e.message : "")
+        );
+      } finally {
+        setLoading(false);
+      }
+    })();
+    return () => {
+      cancel = true;
+    };
+  }, [url, arrayBuffer]);
+  useEffect4(() => {
+    props.onThumbs(thumbs);
+  }, [thumbs]);
+  const pagesToShow = useMemo4(() => {
+    if (props.layout === "side-by-side" && pageCount > 1) {
+      const left = Math.max(1, Math.min(props.currentPage, pageCount));
+      const right = Math.max(1, Math.min(left + 1, pageCount));
+      return left === right ? [left] : [left, right];
+    }
+    return [Math.max(1, Math.min(props.currentPage, pageCount))];
+  }, [props.currentPage, props.layout, pageCount]);
+  useEffect4(() => {
+    if (!doc) {
+      return;
+    }
+    let cancel = false;
+    (async () => {
+      for (const p of pagesToShow) {
+        if (rendered.has(p)) {
+          continue;
+        }
+        try {
+          const page = await doc.getPage(p);
+          if (cancel) {
+            return;
+          }
+          const base = page.getViewport({ scale: 1 });
+          const vp = page.getViewport({ scale: size.w / base.width });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.round(vp.width);
+          canvas.height = Math.round(vp.height);
+          const ctx = canvas.getContext("2d", { alpha: false });
+          if (!ctx) {
+            continue;
+          }
+          await page.render({ canvasContext: ctx, viewport: vp }).promise;
+          if (cancel) {
+            return;
+          }
+          setRendered((prev) => {
+            const next = new Map(prev);
+            next.set(p, canvas);
+            return next;
+          });
+        } catch {
+        }
+      }
+    })();
+    return () => {
+      cancel = true;
+    };
+  }, [doc, pagesToShow, size.w, rendered]);
+  function onWheel(e) {
+    if (!pageCount) {
+      return;
+    }
+    if (Math.abs(e.deltaY) < 10) {
+      return;
+    }
+    const dir = e.deltaY > 0 ? 1 : -1;
+    const step = props.layout === "side-by-side" ? 2 : 1;
+    const next = Math.max(
+      1,
+      Math.min(pageCount, props.currentPage + dir * step)
+    );
+    props.onCurrentPageChange(next);
+  }
+  function clickPlace(e, page) {
+    const stamp = props.signatureStamp;
+    if (!stamp?.armed) {
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    stamp.onPlaced({ page, x, y, w: 0.22, h: 0.08 });
+  }
+  return /* @__PURE__ */ jsxs4("div", { className: "hv-doc", ref: containerRef, onWheel, children: [
+    !doc ? /* @__PURE__ */ jsx4("div", { className: "hv-loading", children: "Loading PDF\u2026" }) : null,
+    doc ? /* @__PURE__ */ jsx4(
+      "div",
+      {
+        className: props.layout === "side-by-side" ? "hv-pages hv-pages--two" : "hv-pages",
+        children: pagesToShow.map((p) => {
+          const c = rendered.get(p);
+          return /* @__PURE__ */ jsx4(
+            "div",
+            {
+              className: "hv-page",
+              style: { width: size.w, height: size.h },
+              onClick: (e) => clickPlace(e, p),
+              children: c ? /* @__PURE__ */ jsx4(
+                "canvas",
+                {
+                  className: "hv-canvas",
+                  width: c.width,
+                  height: c.height,
+                  ref: (node) => {
+                    if (!node) {
+                      return;
+                    }
+                    const ctx = node.getContext("2d");
+                    if (ctx) {
+                      ctx.drawImage(c, 0, 0);
+                    }
+                  }
+                }
+              ) : /* @__PURE__ */ jsx4("div", { className: "hv-loading", children: "Rendering\u2026" })
+            },
+            p
+          );
+        })
+      }
+    ) : null
+  ] });
+}
+
 // src/renderers/PptxRenderer.tsx
 import { useEffect as useEffect5, useMemo as useMemo5, useState as useState5 } from "react";
 import JSZip from "jszip";
-import { jsx as jsx8, jsxs as jsxs8 } from "react/jsx-runtime";
-function decodeXml(s) {
-  return s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+import { jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
+var NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main";
+var NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+function parseColor(solidFill) {
+  if (!solidFill) return void 0;
+  const srgbClr = solidFill.getElementsByTagNameNS(NS_A, "srgbClr")[0];
+  if (srgbClr) {
+    const val = srgbClr.getAttribute("val");
+    return val ? `#${val}` : void 0;
+  }
+  const schemeClr = solidFill.getElementsByTagNameNS(NS_A, "schemeClr")[0];
+  if (schemeClr) {
+    const val = schemeClr.getAttribute("val");
+    const colorMap = {
+      tx1: "#000000",
+      bg1: "#FFFFFF",
+      tx2: "#1F1F1F",
+      accent1: "#4472C4",
+      accent2: "#ED7D31",
+      accent3: "#A5A5A5",
+      accent4: "#FFC000",
+      accent5: "#5B9BD5",
+      accent6: "#70AD47"
+    };
+    return colorMap[val || ""] || "#000000";
+  }
+  return void 0;
 }
-function extractText(xml) {
-  return [...xml.matchAll(/<a:t>(.*?)<\/a:t>/g)].map((m) => decodeXml(m[1] || "")).join(" ").trim();
+function parseSlideXml(xml) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xml, "application/xml");
+  const shapes = Array.from(doc.getElementsByTagNameNS(NS_P, "sp"));
+  let title;
+  let titleColor;
+  const body = [];
+  let bgColor;
+  const bgElements = doc.getElementsByTagNameNS(NS_P, "bg");
+  if (bgElements.length > 0) {
+    const bgPr = bgElements[0].getElementsByTagNameNS(NS_P, "bgPr")[0];
+    if (bgPr) {
+      const solidFill = bgPr.getElementsByTagNameNS(NS_A, "solidFill")[0];
+      bgColor = parseColor(solidFill);
+    }
+  }
+  shapes.forEach((shape) => {
+    const nvSpPr = shape.getElementsByTagNameNS(NS_P, "nvSpPr")[0];
+    const cNvPr = nvSpPr?.getElementsByTagNameNS(NS_P, "cNvPr")[0];
+    const name = cNvPr?.getAttribute("name")?.toLowerCase() || "";
+    const txBody = shape.getElementsByTagNameNS(NS_P, "txBody")[0];
+    if (!txBody) return;
+    const paragraphs = Array.from(txBody.getElementsByTagNameNS(NS_A, "p"));
+    const isTitle = name.includes("title") || name.includes("header") || name.includes("centeredtitle");
+    paragraphs.forEach((p) => {
+      const runs = Array.from(p.getElementsByTagNameNS(NS_A, "r"));
+      runs.forEach((run) => {
+        const textEl = run.getElementsByTagNameNS(NS_A, "t")[0];
+        const text = textEl?.textContent?.trim() || "";
+        if (!text) return;
+        const rPr = run.getElementsByTagNameNS(NS_A, "rPr")[0];
+        let color;
+        let isBold = false;
+        let isItalic = false;
+        if (rPr) {
+          isBold = rPr.getAttribute("b") === "1";
+          isItalic = rPr.getAttribute("i") === "1";
+          const solidFill = rPr.getElementsByTagNameNS(NS_A, "solidFill")[0];
+          color = parseColor(solidFill);
+        }
+        if (isTitle && !title) {
+          title = text;
+          titleColor = color;
+        } else {
+          body.push({ text, color, isBold, isItalic });
+        }
+      });
+    });
+  });
+  return { title, titleColor, body, bgColor };
 }
 function PptxRenderer(props) {
   const [slides, setSlides] = useState5([]);
@@ -748,45 +844,45 @@ function PptxRenderer(props) {
   const [error, setError] = useState5(null);
   const [loading, setLoading] = useState5(false);
   useEffect5(() => {
-    let cancelled = false;
+    let cancel = false;
     setError(null);
     setLoading(true);
     (async () => {
       setSlides([]);
       setThumbs([]);
       if (!props.arrayBuffer) {
-        props.onSlideCount(1);
-        setSlides([{ index: 1, text: "No content" }]);
-        setError("No PPTX data provided.");
+        setError("No PowerPoint source provided.");
         setLoading(false);
         return;
       }
       try {
         const zip = await JSZip.loadAsync(props.arrayBuffer);
-        const files = Object.keys(zip.files).filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p)).sort((a, b) => {
-          const na = Number(a.match(/slide(\d+)\.xml/)?.[1] || 0);
-          const nb = Number(b.match(/slide(\d+)\.xml/)?.[1] || 0);
-          return na - nb;
-        });
-        const out = [];
-        for (let i = 0; i < files.length; i++) {
-          const xml = await zip.file(files[i]).async("string");
-          out.push({ index: i + 1, text: extractText(xml) });
+        const slidePaths = Object.keys(zip.files).filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p)).sort();
+        const slidesOut = [];
+        for (let i = 0; i < slidePaths.length; i++) {
+          const xml = await zip.files[slidePaths[i]].async("string");
+          const parsed = parseSlideXml(xml);
+          slidesOut.push({ index: i + 1, ...parsed });
         }
-        if (cancelled) return;
-        const count = Math.max(1, out.length);
-        props.onSlideCount(count);
-        setSlides(out.length ? out : [{ index: 1, text: "(empty)" }]);
-        setThumbs(
-          Array.from(
-            { length: count },
-            (_, i) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgThumb(i + 1))}`
-          )
+        if (cancel) return;
+        setSlides(
+          slidesOut.length ? slidesOut : [{ index: 1, title: "Empty Slide", body: [] }]
         );
+        props.onSlideCount(slidesOut.length || 1);
+        const thumbsArr = [];
+        for (let i = 0; i < (slidesOut.length || 1); i++) {
+          thumbsArr.push(
+            `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgThumb(i + 1))}`
+          );
+        }
+        setThumbs(thumbsArr);
       } catch (e) {
-        props.onSlideCount(1);
         setSlides([
-          { index: 1, text: "Unable to render this .pptx in-browser." }
+          {
+            index: 1,
+            title: "Error Rendering Presentation",
+            body: [{ text: "Unable to render this .pptx in-browser." }]
+          }
         ]);
         setThumbs([void 0]);
         setError(
@@ -797,53 +893,401 @@ function PptxRenderer(props) {
       }
     })();
     return () => {
-      cancelled = true;
+      cancel = true;
     };
   }, [props.arrayBuffer]);
   useEffect5(() => {
     props.onThumbs(thumbs);
   }, [thumbs]);
   const pagesToShow = useMemo5(() => {
-    if (props.layout === "side-by-side")
-      return [
-        props.currentPage,
-        Math.min(slides.length || props.currentPage + 1, props.currentPage + 1)
-      ];
-    return [props.currentPage];
+    const total = slides.length;
+    if (props.layout === "side-by-side" && total > 1) {
+      const left = Math.max(1, Math.min(props.currentPage, total));
+      const right = Math.max(1, Math.min(left + 1, total));
+      return left === right ? [left] : [left, right];
+    }
+    return [Math.max(1, Math.min(props.currentPage, total))];
   }, [props.currentPage, props.layout, slides.length]);
-  return /* @__PURE__ */ jsxs8("div", { className: "hv-doc", children: [
-    loading && /* @__PURE__ */ jsx8("div", { className: "hv-loading", children: "Loading PPTX\u2026" }),
-    error && /* @__PURE__ */ jsx8("div", { className: "hv-error", children: error }),
-    !loading && !error && (!slides || slides.length === 0) && /* @__PURE__ */ jsx8("div", { className: "hv-error", children: "No slides to display." }),
-    !error && slides && slides.length > 0 && /* @__PURE__ */ jsx8(
-      "div",
-      {
-        className: props.layout === "side-by-side" ? "hv-pages hv-pages--two" : "hv-pages",
-        children: pagesToShow.map((p) => {
-          const s = slides[p - 1];
-          return /* @__PURE__ */ jsxs8(
-            "div",
-            {
-              className: "hv-slide",
-              tabIndex: 0,
-              onFocus: () => props.onCurrentPageChange(p),
-              children: [
-                /* @__PURE__ */ jsxs8("div", { className: "hv-slide-title", children: [
-                  "Slide ",
-                  p
-                ] }),
-                /* @__PURE__ */ jsx8("div", { className: "hv-slide-text", children: s?.text || "" })
-              ]
-            },
-            p
-          );
-        })
-      }
-    )
+  return /* @__PURE__ */ jsxs5("div", { className: "flex flex-col h-full bg-gradient-to-br from-slate-50 via-slate-100 to-slate-50 overflow-hidden", children: [
+    /* @__PURE__ */ jsxs5("div", { className: "flex items-center justify-between px-8 py-5 bg-white/80 backdrop-blur-xl border-b border-slate-200/60 shadow-sm z-10", children: [
+      /* @__PURE__ */ jsxs5("div", { className: "flex items-center gap-4", children: [
+        /* @__PURE__ */ jsx5("div", { className: "w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20", children: /* @__PURE__ */ jsxs5(
+          "svg",
+          {
+            xmlns: "http://www.w3.org/2000/svg",
+            viewBox: "0 0 24 24",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: "2",
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+            className: "w-5 h-5 text-white",
+            children: [
+              /* @__PURE__ */ jsx5("path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }),
+              /* @__PURE__ */ jsx5("path", { d: "M14 2v4a2 2 0 0 0 2 2h4" }),
+              /* @__PURE__ */ jsx5("path", { d: "M10 9H8" }),
+              /* @__PURE__ */ jsx5("path", { d: "M16 13H8" }),
+              /* @__PURE__ */ jsx5("path", { d: "M16 17H8" })
+            ]
+          }
+        ) }),
+        /* @__PURE__ */ jsxs5("div", { className: "flex flex-col", children: [
+          /* @__PURE__ */ jsx5("h2", { className: "text-base font-bold text-slate-800 truncate max-w-sm", children: props.fileName || "Presentation" }),
+          /* @__PURE__ */ jsxs5("span", { className: "text-xs text-slate-500 font-medium", children: [
+            "PowerPoint \u2022 ",
+            slides.length,
+            " ",
+            slides.length === 1 ? "slide" : "slides"
+          ] })
+        ] })
+      ] }),
+      loading && /* @__PURE__ */ jsxs5("div", { className: "flex items-center gap-3 px-4 py-2 bg-blue-50 rounded-full border border-blue-100", children: [
+        /* @__PURE__ */ jsx5(
+          "svg",
+          {
+            xmlns: "http://www.w3.org/2000/svg",
+            viewBox: "0 0 24 24",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: "2",
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+            className: "w-4 h-4 text-blue-600 animate-spin",
+            children: /* @__PURE__ */ jsx5("path", { d: "M12 2v20M2 12h20" })
+          }
+        ),
+        /* @__PURE__ */ jsx5("span", { className: "text-sm font-medium text-blue-700", children: "Processing..." })
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxs5("div", { className: "flex-1 overflow-y-auto p-8 md:p-12 scroll-smooth", children: [
+      error && /* @__PURE__ */ jsx5("div", { className: "max-w-md mx-auto mt-24", children: /* @__PURE__ */ jsxs5("div", { className: "bg-white rounded-2xl shadow-xl border border-red-100 p-8 text-center", children: [
+        /* @__PURE__ */ jsx5("div", { className: "w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center shadow-lg shadow-red-500/20", children: /* @__PURE__ */ jsx5(
+          "svg",
+          {
+            xmlns: "http://www.w3.org/2000/svg",
+            viewBox: "0 0 24 24",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: "2",
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+            className: "w-8 h-8 text-white",
+            children: /* @__PURE__ */ jsx5("path", { d: "M12 2v20M2 12h20" })
+          }
+        ) }),
+        /* @__PURE__ */ jsx5("h3", { className: "text-xl font-bold text-slate-900 mb-2", children: "Unable to Load Presentation" }),
+        /* @__PURE__ */ jsx5("p", { className: "text-sm text-slate-600 leading-relaxed", children: error })
+      ] }) }),
+      !error && slides.length > 0 && /* @__PURE__ */ jsx5("div", { className: "flex flex-col items-center gap-16 max-w-7xl mx-auto", children: pagesToShow.map((p) => {
+        const s = slides[p - 1];
+        const bgColor = s?.bgColor || "#FFFFFF";
+        return /* @__PURE__ */ jsx5(
+          "div",
+          {
+            className: "w-full group",
+            onFocus: () => props.onCurrentPageChange(p),
+            tabIndex: 0,
+            children: /* @__PURE__ */ jsxs5(
+              "div",
+              {
+                className: "relative bg-white shadow-2xl rounded-2xl border border-slate-200/60 overflow-hidden aspect-[16/9] flex flex-col p-12 md:p-20 transition-all duration-500 group-hover:shadow-[0_25px_60px_-15px_rgba(0,0,0,0.2)] group-hover:scale-[1.01]",
+                style: { backgroundColor: bgColor },
+                children: [
+                  /* @__PURE__ */ jsx5("div", { className: "absolute top-6 right-6", children: /* @__PURE__ */ jsx5("div", { className: "px-4 py-1.5 rounded-full bg-slate-900/90 backdrop-blur-sm border border-slate-700/50 shadow-lg", children: /* @__PURE__ */ jsxs5("span", { className: "text-xs font-bold text-white tracking-wider", children: [
+                    p,
+                    " / ",
+                    slides.length
+                  ] }) }) }),
+                  /* @__PURE__ */ jsx5("div", { className: "absolute top-0 left-0 w-32 h-32 bg-gradient-to-br from-blue-500/5 to-transparent rounded-br-full" }),
+                  /* @__PURE__ */ jsx5("div", { className: "absolute bottom-0 right-0 w-32 h-32 bg-gradient-to-tl from-indigo-500/5 to-transparent rounded-tl-full" }),
+                  /* @__PURE__ */ jsxs5("div", { className: "flex-1 flex flex-col justify-center max-w-5xl mx-auto w-full relative z-10", children: [
+                    s?.title && /* @__PURE__ */ jsx5(
+                      "h1",
+                      {
+                        className: "text-4xl md:text-6xl font-black mb-12 leading-[1.1] tracking-tight",
+                        style: { color: s.titleColor || "#0F172A" },
+                        children: s.title
+                      }
+                    ),
+                    /* @__PURE__ */ jsx5("div", { className: "space-y-5", children: s?.body.map((item, idx) => /* @__PURE__ */ jsxs5(
+                      "div",
+                      {
+                        className: "flex items-start gap-5 group/item",
+                        children: [
+                          /* @__PURE__ */ jsx5(
+                            "div",
+                            {
+                              className: "mt-3 w-2 h-2 rounded-full flex-shrink-0 shadow-sm",
+                              style: {
+                                backgroundColor: item.color || "#94A3B8"
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx5(
+                            "p",
+                            {
+                              className: `text-xl md:text-2xl leading-relaxed transition-all ${item.isBold ? "font-bold" : "font-medium"} ${item.isItalic ? "italic" : ""}`,
+                              style: { color: item.color || "#475569" },
+                              children: item.text
+                            }
+                          )
+                        ]
+                      },
+                      idx
+                    )) }),
+                    !s?.title && (!s?.body || s?.body.length === 0) && /* @__PURE__ */ jsxs5("div", { className: "flex-1 flex flex-col items-center justify-center opacity-30 py-16", children: [
+                      /* @__PURE__ */ jsx5("div", { className: "w-20 h-20 mb-6 rounded-2xl bg-slate-200 flex items-center justify-center", children: /* @__PURE__ */ jsxs5(
+                        "svg",
+                        {
+                          xmlns: "http://www.w3.org/2000/svg",
+                          viewBox: "0 0 24 24",
+                          fill: "none",
+                          stroke: "currentColor",
+                          strokeWidth: "2",
+                          strokeLinecap: "round",
+                          strokeLinejoin: "round",
+                          className: "w-10 h-10 text-slate-400",
+                          children: [
+                            /* @__PURE__ */ jsx5("path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }),
+                            /* @__PURE__ */ jsx5("path", { d: "M14 2v4a2 2 0 0 0 2 2h4" }),
+                            /* @__PURE__ */ jsx5("path", { d: "M10 9H8" }),
+                            /* @__PURE__ */ jsx5("path", { d: "M16 13H8" }),
+                            /* @__PURE__ */ jsx5("path", { d: "M16 17H8" })
+                          ]
+                        }
+                      ) }),
+                      /* @__PURE__ */ jsx5("p", { className: "text-slate-400 text-lg italic", children: "No content on this slide" })
+                    ] })
+                  ] }),
+                  /* @__PURE__ */ jsx5("div", { className: "absolute bottom-8 left-8 opacity-10", children: /* @__PURE__ */ jsx5("div", { className: "text-sm font-black text-slate-900 tracking-wider", children: props.fileName?.split(".")[0].toUpperCase() || "PRESENTATION" }) })
+                ]
+              }
+            )
+          },
+          p
+        );
+      }) })
+    ] })
   ] });
 }
 function svgThumb(n) {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="180" height="100"><rect width="100%" height="100%" rx="12" fill="#111827"/><text x="50%" y="54%" font-size="18" fill="#e5e7eb" text-anchor="middle">${n}</text></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="180" height="100"><defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#4F46E5;stop-opacity:1" /><stop offset="100%" style="stop-color:#7C3AED;stop-opacity:1" /></linearGradient></defs><rect width="100%" height="100%" rx="12" fill="url(#bg)"/><text x="50%" y="58%" font-size="24" font-weight="bold" fill="#FFFFFF" text-anchor="middle">${n}</text></svg>`;
+}
+
+// src/utils/locale.ts
+var defaultLocale = {
+  "loading": "Loading\u2026",
+  "error.title": "Error",
+  "toolbar.layout.single": "Single page",
+  "toolbar.layout.two": "Side-by-side",
+  "toolbar.thumbs": "Thumbnails",
+  "toolbar.signatures": "Signatures",
+  "toolbar.sign": "Sign Document",
+  "toolbar.save": "Save",
+  "toolbar.exportPdf": "Export as PDF",
+  "thumbnails.title": "Thumbnails",
+  "thumbnails.page": "Page",
+  "signatures.title": "Signatures",
+  "signatures.empty": "No signatures",
+  "signatures.placeHint": "Click on the document to place the signature.",
+  "a11y.viewer": "Document viewer",
+  "a11y.ribbon": "Ribbon",
+  "a11y.editor": "Document editor"
+};
+
+// src/components/SignaturePanel.tsx
+import React6 from "react";
+import { jsx as jsx6, jsxs as jsxs6 } from "react/jsx-runtime";
+function SignaturePanel(props) {
+  const title = props.locale["signatures.title"] ?? "Signatures";
+  const deduped = React6.useMemo(() => {
+    const seen = /* @__PURE__ */ new Set();
+    return props.signatures.filter((s) => {
+      const key = `${s.signedBy}|${s.dateSigned}|${s.signatureImageUrl}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [props.signatures]);
+  return /* @__PURE__ */ jsxs6(
+    "aside",
+    {
+      className: props.collapsed ? "hv-side hv-side--collapsed" : "hv-side",
+      "aria-label": title,
+      children: [
+        /* @__PURE__ */ jsxs6("div", { className: "hv-sidebar-header", children: [
+          /* @__PURE__ */ jsx6(
+            "button",
+            {
+              type: "button",
+              className: "hv-icon",
+              onClick: props.onToggle,
+              "aria-label": props.locale["toolbar.signatures"] ?? "Signatures",
+              children: /* @__PURE__ */ jsx6("span", { "aria-hidden": true, children: "\u270D" })
+            }
+          ),
+          /* @__PURE__ */ jsx6("div", { className: "hv-sidebar-title", children: title })
+        ] }),
+        /* @__PURE__ */ jsxs6("div", { className: "hv-sidebar-body", children: [
+          deduped.length === 0 && /* @__PURE__ */ jsx6("div", { className: "hv-signature-empty", "aria-live": "polite", children: props.locale["signatures.empty"] ?? "No signatures yet." }),
+          deduped.map((s, idx) => /* @__PURE__ */ jsxs6(
+            "div",
+            {
+              className: "hv-signature-card",
+              tabIndex: 0,
+              "aria-label": `Signature by ${s.signedBy}`,
+              children: [
+                /* @__PURE__ */ jsx6(
+                  "img",
+                  {
+                    src: s.signatureImageUrl,
+                    alt: props.locale["signatures.imgAlt"] ? props.locale["signatures.imgAlt"].replace(
+                      "{name}",
+                      s.signedBy
+                    ) : `Signature by ${s.signedBy}`,
+                    className: "hv-signature-img"
+                  }
+                ),
+                /* @__PURE__ */ jsxs6("div", { className: "hv-signature-meta", children: [
+                  /* @__PURE__ */ jsx6("div", { className: "hv-signature-name", children: s.signedBy }),
+                  /* @__PURE__ */ jsx6("div", { className: "hv-signature-date", children: new Date(s.dateSigned).toLocaleString() }),
+                  s.comment ? /* @__PURE__ */ jsx6("div", { className: "hv-signature-comment", children: s.comment }) : null
+                ] })
+              ]
+            },
+            `${s.signedBy}-${s.dateSigned}-${s.signatureImageUrl}`
+          ))
+        ] })
+      ]
+    }
+  );
+}
+
+// src/components/ThumbnailsSidebar.tsx
+import { jsx as jsx7, jsxs as jsxs7 } from "react/jsx-runtime";
+function ThumbnailsSidebar(props) {
+  const t = props.locale["thumbnails.title"] ?? "Thumbnails";
+  return /* @__PURE__ */ jsxs7(
+    "aside",
+    {
+      className: props.collapsed ? "hv-thumbs hv-thumbs--collapsed" : "hv-thumbs",
+      "aria-label": t,
+      children: [
+        /* @__PURE__ */ jsxs7("div", { className: "hv-thumbs-header", children: [
+          /* @__PURE__ */ jsx7(
+            "button",
+            {
+              type: "button",
+              className: "hv-thumbs-toggle",
+              onClick: props.onToggle,
+              "aria-label": props.collapsed ? props.locale["thumbnails.open"] ?? "Open thumbnails" : props.locale["thumbnails.close"] ?? "Close thumbnails",
+              children: /* @__PURE__ */ jsx7("span", { className: "hv-thumbs-toggle-icon", children: props.collapsed ? "\u25B8" : "\u25BE" })
+            }
+          ),
+          !props.collapsed && /* @__PURE__ */ jsx7("div", { className: "hv-thumbs-title", children: t })
+        ] }),
+        !props.collapsed && /* @__PURE__ */ jsx7("div", { className: "hv-thumbs-list", role: "list", children: props.thumbnails.map((th, idx) => {
+          const p = idx + 1;
+          const active = p === props.currentPage;
+          return /* @__PURE__ */ jsxs7(
+            "button",
+            {
+              type: "button",
+              role: "listitem",
+              className: active ? "hv-thumb hv-thumb--active" : "hv-thumb",
+              onClick: () => props.onSelectPage(p),
+              "aria-current": active ? "page" : void 0,
+              tabIndex: 0,
+              children: [
+                /* @__PURE__ */ jsx7("div", { className: "hv-thumb-img", "aria-hidden": true, children: th.dataUrl ? /* @__PURE__ */ jsx7("img", { src: th.dataUrl, alt: "" }) : /* @__PURE__ */ jsx7("div", { className: "hv-thumb-placeholder" }) }),
+                /* @__PURE__ */ jsx7("div", { className: "hv-thumb-label", children: th.label })
+              ]
+            },
+            th.id
+          );
+        }) })
+      ]
+    }
+  );
+}
+
+// src/components/Toolbar.tsx
+import { jsx as jsx8, jsxs as jsxs8 } from "react/jsx-runtime";
+function Toolbar(props) {
+  const t = (k, fallback) => props.locale[k] ?? fallback;
+  return /* @__PURE__ */ jsxs8(
+    "div",
+    {
+      className: "hv-toolbar",
+      role: "toolbar",
+      "aria-label": t("a11y.toolbar", "Document toolbar"),
+      children: [
+        /* @__PURE__ */ jsxs8("div", { className: "hv-toolbar__group", children: [
+          /* @__PURE__ */ jsx8(
+            "button",
+            {
+              className: `hv-btn ${props.showThumbnails ? "hv-btn--active" : ""}`,
+              onClick: props.onToggleThumbnails,
+              "aria-pressed": props.showThumbnails,
+              children: "Thumbnails"
+            }
+          ),
+          props.mode !== "create" && /* @__PURE__ */ jsx8(
+            "button",
+            {
+              className: `hv-btn ${props.showSignatures ? "hv-btn--active" : ""}`,
+              onClick: props.onToggleSignatures,
+              "aria-pressed": props.showSignatures,
+              children: "Signatures"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ jsxs8("div", { className: "hv-toolbar__group hv-segment", children: [
+          /* @__PURE__ */ jsx8(
+            "button",
+            {
+              className: `hv-btn ${props.layout === "single" ? "hv-btn--active" : ""}`,
+              onClick: () => props.onChangeLayout("single"),
+              children: "Single page"
+            }
+          ),
+          /* @__PURE__ */ jsx8(
+            "button",
+            {
+              className: `hv-btn ${props.layout === "side-by-side" ? "hv-btn--active" : ""}`,
+              onClick: () => props.onChangeLayout("side-by-side"),
+              children: "Side-by-side"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ jsxs8("div", { className: "hv-toolbar__group hv-toolbar__actions", children: [
+          props.showHeaderFooterToggle && /* @__PURE__ */ jsxs8("label", { className: "hv-switch", children: [
+            /* @__PURE__ */ jsx8(
+              "input",
+              {
+                type: "checkbox",
+                checked: props.headerFooterEnabled,
+                onChange: props.onToggleHeaderFooter
+              }
+            ),
+            /* @__PURE__ */ jsx8("span", { className: "hv-switch__slider" }),
+            /* @__PURE__ */ jsx8("span", { className: "hv-switch__label", children: t("toolbar.letterhead", "Letterhead") })
+          ] }),
+          props.allowSigning && /* @__PURE__ */ jsx8(
+            "button",
+            {
+              className: "hv-btn hv-btn--primary",
+              onClick: props.onSign,
+              disabled: props.signingDisabled,
+              children: "Sign document"
+            }
+          ),
+          props.canExportPdf && /* @__PURE__ */ jsx8("button", { className: "hv-btn", onClick: props.onExportPdf, children: "Export PDF" }),
+          props.canSave && /* @__PURE__ */ jsx8("button", { className: "hv-btn hv-btn--primary", onClick: props.onSave, children: "Save" })
+        ] })
+      ]
+    }
+  );
 }
 
 // src/components/DocumentViewer.tsx
@@ -851,8 +1295,13 @@ import { jsx as jsx9, jsxs as jsxs9 } from "react/jsx-runtime";
 function DocumentViewer(props) {
   const mode = props.mode ?? "view";
   const theme = props.theme ?? "light";
-  const locale = useMemo6(() => ({ ...defaultLocale, ...props.locale ?? {} }), [props.locale]);
-  const [layout, setLayout] = useState6(props.defaultLayout ?? "single");
+  const locale = useMemo6(
+    () => ({ ...defaultLocale, ...props.locale ?? {} }),
+    [props.locale]
+  );
+  const [layout, setLayout] = useState6(
+    props.defaultLayout ?? "single"
+  );
   const [showThumbnails, setShowThumbnails] = useState6(true);
   const [showSignatures, setShowSignatures] = useState6(true);
   const [headerFooterEnabled, setHeaderFooterEnabled] = useState6(true);
@@ -863,10 +1312,17 @@ function DocumentViewer(props) {
   const [pageCount, setPageCount] = useState6(1);
   const [currentPage, setCurrentPage] = useState6(1);
   const [thumbs, setThumbs] = useState6([]);
-  const [localSignatures, setLocalSignatures] = useState6(props.signatures ?? []);
-  useEffect6(() => setLocalSignatures(props.signatures ?? []), [props.signatures]);
+  const [localSignatures, setLocalSignatures] = useState6(
+    props.signatures ?? []
+  );
+  useEffect6(
+    () => setLocalSignatures(props.signatures ?? []),
+    [props.signatures]
+  );
   const [sigPlacements, setSigPlacements] = useState6([]);
-  const [armedSignatureUrl, setArmedSignatureUrl] = useState6(null);
+  const [armedSignatureUrl, setArmedSignatureUrl] = useState6(
+    null
+  );
   const editorRef = useRef3(null);
   useEffect6(() => {
     let cancelled = false;
@@ -880,7 +1336,10 @@ function DocumentViewer(props) {
       setArmedSignatureUrl(null);
       if (mode === "create") {
         const ft = props.fileType ?? "docx";
-        setResolved({ fileType: ft, fileName: props.fileName ?? `Untitled.${ft}` });
+        setResolved({
+          fileType: ft,
+          fileName: props.fileName ?? `Untitled.${ft}`
+        });
         return;
       }
       try {
@@ -891,17 +1350,33 @@ function DocumentViewer(props) {
           fileName: props.fileName,
           fileType: props.fileType
         });
-        if (cancelled) return;
-        setResolved({ fileType: res.fileType, fileName: res.fileName, url: res.url, arrayBuffer: res.arrayBuffer });
+        if (cancelled) {
+          return;
+        }
+        setResolved({
+          fileType: res.fileType,
+          fileName: res.fileName,
+          url: res.url,
+          arrayBuffer: res.arrayBuffer
+        });
       } catch (e) {
-        if (cancelled) return;
+        if (cancelled) {
+          return;
+        }
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [mode, props.fileUrl, props.base64, props.blob, props.fileName, props.fileType]);
+  }, [
+    mode,
+    props.fileUrl,
+    props.base64,
+    props.blob,
+    props.fileName,
+    props.fileType
+  ]);
   const thumbnails = useMemo6(() => {
     const n = Math.max(1, pageCount);
     return Array.from({ length: n }, (_, i) => ({
@@ -911,7 +1386,9 @@ function DocumentViewer(props) {
     }));
   }, [pageCount, thumbs, locale]);
   async function handleSignRequest() {
-    if (!allowSigning || signingBusy || !props.onSignRequest) return;
+    if (!allowSigning || signingBusy || !props.onSignRequest) {
+      return;
+    }
     setSigningBusy(true);
     try {
       const sig = await props.onSignRequest();
@@ -922,8 +1399,13 @@ function DocumentViewer(props) {
     }
   }
   function placeSignature(p) {
-    if (!armedSignatureUrl) return;
-    setSigPlacements((prev) => [...prev, { ...p, signatureImageUrl: armedSignatureUrl }]);
+    if (!armedSignatureUrl) {
+      return;
+    }
+    setSigPlacements((prev) => [
+      ...prev,
+      { ...p, signatureImageUrl: armedSignatureUrl }
+    ]);
     setArmedSignatureUrl(null);
   }
   async function handleSave(exportPdf) {
@@ -931,9 +1413,15 @@ function DocumentViewer(props) {
       await editorRef.current.save(!!exportPdf);
       return;
     }
-    if (!resolved?.arrayBuffer) return;
+    if (!resolved?.arrayBuffer) {
+      return;
+    }
     const b64 = arrayBufferToBase642(resolved.arrayBuffer);
-    props.onSave?.(b64, { fileName: resolved.fileName, fileType: resolved.fileType, annotations: { sigPlacements } });
+    props.onSave?.(b64, {
+      fileName: resolved.fileName,
+      fileType: resolved.fileType,
+      annotations: { sigPlacements }
+    });
   }
   const canSave = mode === "edit" || mode === "create";
   const canExportPdf = (mode === "edit" || mode === "create") && (resolved?.fileType === "docx" || resolved?.fileType === "md" || resolved?.fileType === "txt" || resolved?.fileType === "xlsx");
@@ -966,7 +1454,7 @@ function DocumentViewer(props) {
       /* @__PURE__ */ jsx9("div", { className: "hv-error-title", children: locale["error.title"] ?? "Error" }),
       /* @__PURE__ */ jsx9("div", { className: "hv-error-body", children: error })
     ] }) : null,
-    !resolved && !error ? /* @__PURE__ */ jsx9("div", { className: "hv-loading", "aria-busy": "true", children: locale["loading"] ?? "Loading\u2026" }) : null,
+    !resolved && !error ? /* @__PURE__ */ jsx9("div", { className: "hv-loading", "aria-busy": "true", children: locale.loading ?? "Loading\u2026" }) : null,
     resolved ? /* @__PURE__ */ jsxs9("div", { className: "hv-shell", children: [
       mode !== "create" ? /* @__PURE__ */ jsx9(
         ThumbnailsSidebar,
@@ -990,13 +1478,19 @@ function DocumentViewer(props) {
             onCurrentPageChange: setCurrentPage,
             onPageCount: (n) => {
               setPageCount(n);
-              setThumbs((prev) => prev.length === n ? prev : Array.from({ length: n }, (_, i) => prev[i]));
+              setThumbs(
+                (prev) => prev.length === n ? prev : Array.from({ length: n }, (_, i) => prev[i])
+              );
             },
             onThumbs: (t) => setThumbs(t),
-            signatureStamp: armedSignatureUrl ? { imageUrl: armedSignatureUrl, armed: true, onPlaced: placeSignature } : void 0
+            signatureStamp: armedSignatureUrl ? {
+              imageUrl: armedSignatureUrl,
+              armed: true,
+              onPlaced: placeSignature
+            } : void 0
           }
         ) : null,
-        resolved.fileType === "docx" || resolved.fileType === "md" || resolved.fileType === "txt" ? /* @__PURE__ */ jsx9(
+        resolved.fileType === "docx" || resolved.fileType === "doc" || resolved.fileType === "md" || resolved.fileType === "txt" ? /* @__PURE__ */ jsx9(
           RichTextEditor,
           {
             ref: editorRef,
@@ -1012,14 +1506,15 @@ function DocumentViewer(props) {
             signaturePlacements: sigPlacements,
             onPageCount: (n) => {
               setPageCount(n);
-              setThumbs((prev) => prev.length === n ? prev : Array.from({ length: n }, (_, i) => prev[i]));
             },
+            onThumbs: (t) => setThumbs(t),
+            layout,
             onSave: (b64, meta) => props.onSave?.(b64, meta),
             armedSignatureUrl,
             onPlaceSignature: placeSignature
           }
         ) : null,
-        resolved.fileType === "xlsx" ? /* @__PURE__ */ jsx9(
+        resolved.fileType === "xlsx" || resolved.fileType === "csv" || resolved.fileType === "xls" ? /* @__PURE__ */ jsx9(
           SpreadsheetEditor,
           {
             ref: editorRef,
@@ -1030,21 +1525,31 @@ function DocumentViewer(props) {
             onSave: (b64, meta) => props.onSave?.(b64, meta)
           }
         ) : null,
-        resolved.fileType === "pptx" ? /* @__PURE__ */ jsx9(
+        resolved.fileType === "pptx" || resolved.fileType === "ppt" ? /* @__PURE__ */ jsx9(
           PptxRenderer,
           {
             arrayBuffer: resolved.arrayBuffer,
+            fileName: resolved.fileName,
             layout,
             currentPage,
             onCurrentPageChange: setCurrentPage,
             onSlideCount: (n) => {
               setPageCount(n);
-              setThumbs((prev) => prev.length === n ? prev : Array.from({ length: n }, (_, i) => prev[i]));
+              setThumbs(
+                (prev) => prev.length === n ? prev : Array.from({ length: n }, (_, i) => prev[i])
+              );
             },
             onThumbs: (t) => setThumbs(t)
           }
         ) : null,
-        resolved.fileType === "png" || resolved.fileType === "jpg" || resolved.fileType === "svg" ? /* @__PURE__ */ jsx9(ImageRenderer, { arrayBuffer: resolved.arrayBuffer, fileType: resolved.fileType, fileName: resolved.fileName }) : null
+        resolved.fileType === "png" || resolved.fileType === "jpg" || resolved.fileType === "svg" ? /* @__PURE__ */ jsx9(
+          ImageRenderer,
+          {
+            arrayBuffer: resolved.arrayBuffer,
+            fileType: resolved.fileType,
+            fileName: resolved.fileName
+          }
+        ) : null
       ] }),
       mode !== "create" && localSignatures.length ? /* @__PURE__ */ jsx9(
         SignaturePanel,
@@ -1070,4 +1575,4 @@ function arrayBufferToBase642(ab) {
 export {
   DocumentViewer
 };
-//# sourceMappingURL=index.js.map
+//# sourceMappingURL=index.mjs.map

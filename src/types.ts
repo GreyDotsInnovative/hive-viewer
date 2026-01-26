@@ -8,7 +8,7 @@ export interface Signature {
 export type PageLayout = 'single' | 'side-by-side';
 export type DocumentMode = 'view' | 'edit' | 'create';
 
-export type SupportedFileType = 'pdf' | 'md' | 'docx' | 'xlsx' | 'pptx' | 'txt' | 'png' | 'jpg' | 'svg';
+export type SupportedFileType = 'pdf' | 'md' | 'docx' | 'doc' | 'xlsx' | 'pptx' | 'txt' | 'png' | 'jpg' | 'svg' | 'ppt' | 'csv' | 'xls' | 'xml';
 
 export interface DocumentViewerSaveMeta {
   fileName: string;
