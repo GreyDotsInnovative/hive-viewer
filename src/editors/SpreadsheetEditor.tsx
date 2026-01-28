@@ -18,7 +18,7 @@ interface SpreadsheetEditorProps {
   mode: DocumentMode;
   fileName: string;
   arrayBuffer?: ArrayBuffer;
-  layout?: "single" | "side-by-side"; // Passed from parent
+  layout?: "single" | "side-by-side";
   onSave?: (base64: string, meta: any) => void;
 }
 
@@ -38,20 +38,17 @@ export const SpreadsheetEditor = forwardRef<
       const wsName = wb.SheetNames[0];
       const ws = wb.Sheets[wsName];
 
-      // Use sheet_to_json with header:1 to get a raw array of arrays
       const jsonData = XLSX.utils.sheet_to_json(ws, {
         header: 1,
         defval: "",
       }) as string[][];
 
-      // Pad data to ensure it looks like a full sheet
       const minRows = 40;
       const minCols = 15;
 
       const rows = Math.max(minRows, jsonData.length);
       const colCount = Math.max(minCols, jsonData[0]?.length || 0);
 
-      // Fill gaps
       const normalized = Array.from({ length: rows }, (_, r) => {
         const row = jsonData[r] || [];
         return Array.from({ length: colCount }, (_, c) =>
@@ -61,7 +58,6 @@ export const SpreadsheetEditor = forwardRef<
 
       setData(normalized);
 
-      // Generate Column Headers (A, B, ... AA, AB)
       const headers = Array.from({ length: colCount }, (_, i) => {
         let letter = "";
         let temp = i;
@@ -77,7 +73,6 @@ export const SpreadsheetEditor = forwardRef<
     }
   }, [props.arrayBuffer]);
 
-  // Save functionality
   async function save(exportPdf?: boolean) {
     if (!props.onSave) return;
     const ws = XLSX.utils.aoa_to_sheet(data);
@@ -85,7 +80,6 @@ export const SpreadsheetEditor = forwardRef<
     XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
     const out = XLSX.write(wb, { type: "array", bookType: "xlsx" });
 
-    // Convert to base64
     const bytes = new Uint8Array(out);
     let binary = "";
     for (let i = 0; i < bytes.byteLength; i++) {
@@ -102,8 +96,6 @@ export const SpreadsheetEditor = forwardRef<
 
   return (
     <div className="hv-view-single">
-      {/* We use hv-page-container to match the "Paper" aesthetic, 
-            but allow overflow for large sheets */}
       <div
         className="hv-page-container"
         style={{
@@ -111,10 +103,12 @@ export const SpreadsheetEditor = forwardRef<
           maxWidth: "95vw",
           minWidth: "800px",
           padding: 0,
-          overflow: "hidden", // The internal container scrolls
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column",
         }}
       >
-        {/* Toolbar / Formula Bar Simulation (Optional visual flair) */}
+        {/* Toolbar / Formula Bar */}
         <div
           style={{
             background: "#f8f9fa",
@@ -124,6 +118,7 @@ export const SpreadsheetEditor = forwardRef<
             color: "#64748b",
             display: "flex",
             gap: "12px",
+            flexShrink: 0,
           }}
         >
           <span>fx</span>
@@ -140,7 +135,15 @@ export const SpreadsheetEditor = forwardRef<
 
         {/* Main Grid Container */}
         <div
-          style={{ overflow: "auto", maxHeight: "80vh", position: "relative" }}
+          style={{
+            overflow: "auto",
+            // FIX: Dynamic height ensures bottom isn't cut off on small screens
+            maxHeight: "calc(100vh - 140px)",
+            minHeight: "400px",
+            position: "relative",
+            // FIX: Padding prevents border clipping (first row/col edges)
+            padding: "1px",
+          }}
         >
           <table
             style={{
@@ -160,7 +163,7 @@ export const SpreadsheetEditor = forwardRef<
                     position: "sticky",
                     top: 0,
                     left: 0,
-                    zIndex: 20,
+                    zIndex: 30, // Increased zIndex
                   }}
                 />
 
@@ -178,7 +181,7 @@ export const SpreadsheetEditor = forwardRef<
                       padding: "4px",
                       position: "sticky",
                       top: 0,
-                      zIndex: 10,
+                      zIndex: 20, // Increased zIndex
                     }}
                   >
                     {col}
@@ -199,7 +202,7 @@ export const SpreadsheetEditor = forwardRef<
                       color: "#64748b",
                       position: "sticky",
                       left: 0,
-                      zIndex: 10,
+                      zIndex: 20, // Increased zIndex to stay above cells
                     }}
                   >
                     {r + 1}
@@ -229,6 +232,7 @@ export const SpreadsheetEditor = forwardRef<
                         whiteSpace: "nowrap",
                         overflow: "hidden",
                         outline: "none",
+                        zIndex: 1,
                       }}
                     >
                       {cell}
