@@ -1,383 +1,214 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import {
-  RichTextEditor,
-  type RichTextEditorHandle,
-} from "../editors/RichTextEditor";
-import {
-  SpreadsheetEditor,
-  type SpreadsheetEditorHandle,
-} from "../editors/SpreadsheetEditor";
+import React, { useEffect, useState } from "react";
+import { RichTextEditor } from "../editors/RichTextEditor";
+import { SpreadsheetEditor } from "../editors/SpreadsheetEditor";
 import { ImageRenderer } from "../renderers/ImageRenderer";
 import { PdfRenderer } from "../renderers/PdfRenderer";
 import { PptxRenderer } from "../renderers/PptxRenderer";
 import type {
   DocumentMode,
   DocumentViewerProps,
-  DocumentViewerSaveMeta,
-  PageLayout,
-  Signature,
   SupportedFileType,
+  Signature, // Import Signature from here
 } from "../types";
 import { resolveSource } from "../utils/fileSource";
-import { defaultLocale } from "../utils/locale";
-import { SignaturePanel } from "./SignaturePanel";
-import { ThumbnailsSidebar, type Thumbnail } from "./ThumbnailsSidebar";
+
+// Components
+import { ThumbnailsSidebar } from "./ThumbnailsSidebar";
 import { Toolbar } from "./Toolbar";
-
-interface SigPlacement {
-  page: number;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  signatureImageUrl: string;
-}
-
-type EditorHandle = (RichTextEditorHandle | SpreadsheetEditorHandle) & {
-  save: (exportPdf?: boolean) => Promise<void>;
-};
+import { SignaturePanel } from "./SignaturePanel";
 
 export function DocumentViewer(props: DocumentViewerProps) {
+  // --- State & Config ---
   const mode: DocumentMode = props.mode ?? "view";
   const theme = props.theme ?? "light";
-  const locale = useMemo(
-    () => ({ ...defaultLocale, ...(props.locale ?? {}) }),
-    [props.locale],
-  );
 
-  const [layout, setLayout] = useState<PageLayout>(
+  // Layout State
+  const [layout, setLayout] = useState<"single" | "side-by-side">(
     props.defaultLayout ?? "single",
   );
   const [showThumbnails, setShowThumbnails] = useState(true);
-  const [showSignatures, setShowSignatures] = useState(true);
-  const [headerFooterEnabled, setHeaderFooterEnabled] = useState(true);
+  const [showSignatures, setShowSignatures] = useState(false); // [2] New State for Right Sidebar
 
-  const allowSigning = props.allowSigning ?? false;
-  const [signingBusy, setSigningBusy] = useState(false);
-
+  // Data Loading State
   const [resolved, setResolved] = useState<{
     fileType: SupportedFileType;
     fileName: string;
     url?: string;
     arrayBuffer?: ArrayBuffer;
   } | null>(null);
+
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
+
+  // Viewer Context (Page Counts, etc)
   const [pageCount, setPageCount] = useState(1);
   const [currentPage, setCurrentPage] = useState(1);
-  const [thumbs, setThumbs] = useState<Array<string | undefined>>([]);
+  const [thumbnails, setThumbnails] = useState<string[]>([]);
 
-  const [localSignatures, setLocalSignatures] = useState<Signature[]>(
-    props.signatures ?? [],
-  );
-  useEffect(
-    () => setLocalSignatures(props.signatures ?? []),
-    [props.signatures],
-  );
+  // --- Effects ---
 
-  const [sigPlacements, setSigPlacements] = useState<SigPlacement[]>([]);
-  const [armedSignatureUrl, setArmedSignatureUrl] = useState<string | null>(
-    null,
-  );
-
-  const editorRef = useRef<EditorHandle | null>(null);
-
+  // 1. Resolve File Source
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
+    let active = true;
+
+    const loadFile = async () => {
+      setLoading(true);
       setError("");
       setResolved(null);
-      setThumbs([]);
-      setPageCount(1);
-      setCurrentPage(1);
-      setSigPlacements([]);
-      setArmedSignatureUrl(null);
-
-      if (mode === "create") {
-        const ft = (props.fileType ?? "docx") as SupportedFileType;
-        setResolved({
-          fileType: ft,
-          fileName: props.fileName ?? `Untitled.${ft}`,
-        });
-        return;
-      }
 
       try {
-        const res = await resolveSource({
-          fileUrl: props.fileUrl,
-          base64: props.base64,
-          blob: props.blob,
-          fileName: props.fileName,
-          fileType: props.fileType,
-        });
-        if (cancelled) {
-          return;
+        if (mode === "create") {
+          // Handle creation mode
+          setResolved({
+            fileType: (props.fileType ?? "docx") as SupportedFileType,
+            fileName: props.fileName ?? "Untitled",
+          });
+        } else {
+          // Handle view/edit mode
+          const res = await resolveSource({
+            fileUrl: props.fileUrl,
+            base64: props.base64,
+            blob: props.blob,
+            fileName: props.fileName,
+            fileType: props.fileType,
+          });
+          if (active) setResolved(res);
         }
-        setResolved({
-          fileType: res.fileType,
-          fileName: res.fileName,
-          url: res.url,
-          arrayBuffer: res.arrayBuffer,
-        });
-      } catch (e) {
-        if (cancelled) {
-          return;
-        }
-        setError(e instanceof Error ? e.message : String(e));
+      } catch (err: any) {
+        if (active) setError(err.message || "Failed to load document");
+      } finally {
+        if (active) setLoading(false);
       }
-    })();
-    return () => {
-      cancelled = true;
     };
-  }, [
-    mode,
-    props.fileUrl,
-    props.base64,
-    props.blob,
-    props.fileName,
-    props.fileType,
-  ]);
 
-  const thumbnails: Thumbnail[] = useMemo(() => {
-    const n = Math.max(1, pageCount);
-    return Array.from({ length: n }, (_, i) => ({
-      id: `p-${i + 1}`,
-      label: `${locale["thumbnails.page"] ?? "Page"} ${i + 1}`,
-      dataUrl: thumbs[i],
-    }));
-  }, [pageCount, thumbs, locale]);
+    loadFile();
+    return () => {
+      active = false;
+    };
+  }, [props.fileUrl, props.base64, props.blob, mode]);
 
-  async function handleSignRequest() {
-    if (!allowSigning || signingBusy || !props.onSignRequest) {
-      return;
+  // --- Signature Handler [3] ---
+  const handleSignatureSelect = (sig: Signature) => {
+    // Return value to user via prop if available
+    if (props.onSign) {
+      props.onSign(sig);
     }
-    setSigningBusy(true);
-    try {
-      const sig = await props.onSignRequest();
-      setLocalSignatures((prev: Signature[]) => [...prev, sig]);
-      setArmedSignatureUrl(sig.signatureImageUrl);
-    } finally {
-      setSigningBusy(false);
-    }
-  }
 
-  function placeSignature(p: {
-    page: number;
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-  }) {
-    if (!armedSignatureUrl) {
-      return;
-    }
-    setSigPlacements((prev: SigPlacement[]) => [
-      ...prev,
-      { ...p, signatureImageUrl: armedSignatureUrl },
-    ]);
-    setArmedSignatureUrl(null);
-  }
+    // Logic to place signature on document would go here
+    console.log("Signature selected:", sig);
 
-  async function handleSave(exportPdf?: boolean) {
-    if (editorRef.current) {
-      await editorRef.current.save(!!exportPdf);
-      return;
+    // Optional: Auto-close sidebar after selection
+    // setShowSignatures(false);
+  };
+
+  // --- Render Helpers ---
+
+  const renderContent = () => {
+    if (error) {
+      return (
+        <div className="hv-error-banner">
+          <strong>Error loading document</strong>
+          <p>{error}</p>
+        </div>
+      );
     }
-    if (!resolved?.arrayBuffer) {
-      return;
+
+    if (loading || !resolved) {
+      return (
+        <div className="hv-loader">
+          <div className="hv-spinner" />
+          <span>Loading Document...</span>
+        </div>
+      );
     }
-    const b64 = arrayBufferToBase64(resolved.arrayBuffer);
-    props.onSave?.(b64, {
+
+    const commonProps = {
+      arrayBuffer: resolved.arrayBuffer,
       fileName: resolved.fileName,
       fileType: resolved.fileType,
-      annotations: { sigPlacements },
-    });
-  }
+      layout,
+      currentPage,
+      onPageCount: setPageCount,
+      onCurrentPageChange: setCurrentPage,
+      onThumbs: setThumbnails,
+    };
 
-  const canSave = mode === "edit" || mode === "create";
-  const canExportPdf =
-    (mode === "edit" || mode === "create") &&
-    (resolved?.fileType === "docx" ||
-      resolved?.fileType === "md" ||
-      resolved?.fileType === "txt" ||
-      resolved?.fileType === "xlsx");
+    switch (resolved.fileType) {
+      case "pdf":
+        return <PdfRenderer url={resolved.url} {...commonProps} />;
+
+      case "docx":
+      case "doc":
+      case "rtf":
+      case "txt":
+      case "md":
+        return <RichTextEditor mode={mode} {...commonProps} />;
+
+      case "xlsx":
+      case "csv":
+      case "xls":
+        return <SpreadsheetEditor mode={mode} {...commonProps} />;
+
+      case "pptx":
+      case "ppt":
+        return <PptxRenderer {...commonProps} />;
+
+      case "jpg":
+      case "jpeg":
+      case "png":
+      case "gif":
+      case "bmp":
+      case "svg":
+        return <ImageRenderer {...commonProps} fileType={resolved.fileType} />;
+
+      default:
+        return (
+          <div className="hv-error-banner">
+            Unsupported file type: {resolved.fileType}
+          </div>
+        );
+    }
+  };
 
   return (
-    <div className={`hv-root`} data-hv-theme={theme}>
+    <div className="hv-root" data-hv-theme={theme}>
+      {/* 1. Toolbar */}
       <Toolbar
-        locale={locale}
-        mode={mode}
-        fileType={resolved?.fileType}
+        fileName={resolved?.fileName}
+        pageCount={pageCount}
+        currentPage={currentPage}
+        onPageChange={setCurrentPage}
         layout={layout}
-        onChangeLayout={setLayout}
+        onLayoutChange={setLayout}
+        // Left Sidebar (Thumbnails)
         showThumbnails={showThumbnails}
-        onToggleThumbnails={() => setShowThumbnails((v: boolean) => !v)}
+        onToggleThumbnails={() => setShowThumbnails(!showThumbnails)}
+        // Right Sidebar (Signatures) - [4] Replaced Download with Signature Toggle
         showSignatures={showSignatures}
-        onToggleSignatures={() => setShowSignatures((v: boolean) => !v)}
-        onSign={() => void handleSignRequest()}
-        allowSigning={allowSigning}
-        signingDisabled={signingBusy || !props.onSignRequest}
-        canSave={canSave}
-        onSave={() => void handleSave(false)}
-        canExportPdf={canExportPdf}
-        onExportPdf={() => void handleSave(true)}
-        headerFooterEnabled={headerFooterEnabled}
-        showHeaderFooterToggle={
-          (props.enableHeaderFooterToggle ?? true) && mode === "create"
-        }
-        onToggleHeaderFooter={() => setHeaderFooterEnabled((v: boolean) => !v)}
+        onToggleSignatures={() => setShowSignatures(!showSignatures)}
       />
 
-      {error ? (
-        <div className="hv-error" role="alert">
-          <div className="hv-error-title">
-            {locale["error.title"] ?? "Error"}
-          </div>
-          <div className="hv-error-body">{error}</div>
-        </div>
-      ) : null}
+      <div className="hv-shell">
+        {/* 2. Left Sidebar (Thumbnails) */}
+        <ThumbnailsSidebar
+          isOpen={showThumbnails}
+          thumbnails={thumbnails}
+          currentPage={currentPage}
+          onSelectPage={setCurrentPage}
+        />
 
-      {!resolved && !error ? (
-        <div className="hv-loading" aria-busy="true">
-          {locale.loading ?? "Loading…"}
-        </div>
-      ) : null}
+        {/* 3. Main Stage */}
+        <main className="hv-main">{renderContent()}</main>
 
-      {resolved ? (
-        <div className="hv-shell">
-          {mode !== "create" ? (
-            <ThumbnailsSidebar
-              locale={locale}
-              thumbnails={thumbnails}
-              currentPage={currentPage}
-              collapsed={!showThumbnails}
-              onToggle={() => setShowThumbnails((v: boolean) => !v)}
-              onSelectPage={setCurrentPage}
-            />
-          ) : null}
-
-          <main className="hv-main">
-            {resolved.fileType === "pdf" ? (
-              <PdfRenderer
-                url={resolved.url}
-                arrayBuffer={resolved.arrayBuffer}
-                layout={layout}
-                currentPage={currentPage}
-                onCurrentPageChange={setCurrentPage}
-                onPageCount={(n) => {
-                  setPageCount(n);
-                  setThumbs((prev) =>
-                    prev.length === n
-                      ? prev
-                      : Array.from({ length: n }, (_, i) => prev[i]),
-                  );
-                }}
-                onThumbs={(t) => setThumbs(t)}
-                signatureStamp={
-                  armedSignatureUrl
-                    ? {
-                        imageUrl: armedSignatureUrl,
-                        armed: true,
-                        onPlaced: placeSignature,
-                      }
-                    : undefined
-                }
-              />
-            ) : null}
-
-            {resolved.fileType === "docx" ||
-            resolved.fileType === "doc" ||
-            resolved.fileType === "md" ||
-            resolved.fileType === "txt" ? (
-              <RichTextEditor
-                ref={editorRef as any}
-                mode={mode}
-                fileType={resolved.fileType}
-                fileName={resolved.fileName}
-                arrayBuffer={resolved.arrayBuffer}
-                headerComponent={props.headerComponent}
-                footerComponent={props.footerComponent}
-                headerFooterEnabled={headerFooterEnabled}
-                locale={locale}
-                signatures={localSignatures}
-                signaturePlacements={sigPlacements}
-                onPageCount={(n: number) => {
-                  setPageCount(n);
-                }}
-                onThumbs={(t: (string | undefined)[]) => setThumbs(t)}
-                layout={layout}
-                onSave={(b64: string, meta: DocumentViewerSaveMeta) =>
-                  props.onSave?.(b64, meta)
-                }
-                armedSignatureUrl={armedSignatureUrl}
-                onPlaceSignature={placeSignature}
-              />
-            ) : null}
-
-            {resolved.fileType === "xlsx" ||
-            resolved.fileType === "csv" ||
-            resolved.fileType === "xls" ? (
-              <SpreadsheetEditor
-                ref={editorRef as any}
-                mode={mode}
-                fileName={resolved.fileName}
-                arrayBuffer={resolved.arrayBuffer}
-                locale={locale}
-                onSave={(b64, meta) => props.onSave?.(b64, meta)}
-              />
-            ) : null}
-
-            {resolved.fileType === "pptx" || resolved.fileType === "ppt" ? (
-              <PptxRenderer
-                arrayBuffer={resolved.arrayBuffer}
-                fileName={resolved.fileName}
-                layout={layout}
-                currentPage={currentPage}
-                onCurrentPageChange={setCurrentPage}
-                onSlideCount={(n) => {
-                  setPageCount(n);
-                  setThumbs((prev) =>
-                    prev.length === n
-                      ? prev
-                      : Array.from({ length: n }, (_, i) => prev[i]),
-                  );
-                }}
-                onThumbs={(t) => setThumbs(t)}
-              />
-            ) : null}
-
-            {resolved.fileType === "png" ||
-            resolved.fileType === "jpg" ||
-            resolved.fileType === "svg" ? (
-              <ImageRenderer
-                arrayBuffer={resolved.arrayBuffer}
-                fileType={resolved.fileType}
-                fileName={resolved.fileName}
-              />
-            ) : null}
-          </main>
-
-          {mode !== "create" && localSignatures.length ? (
-            <SignaturePanel
-              locale={locale}
-              signatures={localSignatures}
-              collapsed={!showSignatures}
-              onToggle={() => setShowSignatures((v: boolean) => !v)}
-            />
-          ) : null}
-        </div>
-      ) : null}
+        {/* 4. Right Sidebar (Signatures) - [5] Added Component */}
+        <SignaturePanel
+          isOpen={showSignatures}
+          onClose={() => setShowSignatures(false)}
+          onSelectSignature={handleSignatureSelect}
+        />
+      </div>
     </div>
   );
-}
-
-function arrayBufferToBase64(ab: ArrayBuffer): string {
-  const bytes = new Uint8Array(ab);
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
 }

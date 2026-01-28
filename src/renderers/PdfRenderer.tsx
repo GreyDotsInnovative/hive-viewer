@@ -8,250 +8,178 @@ import {
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { PageLayout } from "../types";
 
-/**
- * PDF document renderer for DocumentViewer.
- * Handles loading, error, and signature placement.
- */
-export function PdfRenderer(props: {
-  /** PDF file URL (optional) */
+// FIX 1: Updated version to match the error message (4.10.38)
+const PDF_WORKER_URL =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs";
+
+interface PdfRendererProps {
   url?: string;
-  /** PDF file as ArrayBuffer (optional) */
   arrayBuffer?: ArrayBuffer;
-  /** Page layout mode */
   layout: PageLayout;
-  /** Current page number (1-based) */
   currentPage: number;
-  /** Callback when current page changes */
-  onCurrentPageChange: (p: number) => void;
-  /** Callback when page count is determined */
   onPageCount: (n: number) => void;
-  /** Callback for thumbnail images */
-  onThumbs: (thumbs: Array<string | undefined>) => void;
-  /** Signature stamp for placement (optional) */
-  signatureStamp?: {
-    imageUrl: string;
-    armed: boolean;
-    onPlaced: (placement: {
-      page: number;
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-    }) => void;
-  };
-}) {
-  const { url, arrayBuffer } = props;
+  onCurrentPageChange: (p: number) => void;
+  onThumbs: (thumbs: string[]) => void;
+}
+
+export function PdfRenderer(props: PdfRendererProps) {
+  const { url, arrayBuffer, layout, currentPage } = props;
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
-  const [pageCount, setPageCount] = useState(0);
-  const [rendered, setRendered] = useState<Map<number, HTMLCanvasElement>>(
-    new Map(),
-  );
-  const [thumbs, setThumbs] = useState<Array<string | undefined>>([]);
-  const [size, setSize] = useState({ w: 840, h: 1188 });
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    try {
-      GlobalWorkerOptions.workerSrc = new URL(
-        "pdfjs-dist/build/pdf.worker.min.mjs",
-        import.meta.url,
-      ).toString();
-    } catch {}
-  }, []);
+    // Ensure worker is set up
+    if (!GlobalWorkerOptions.workerSrc) {
+      GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
+    }
 
-  useEffect(() => {
-    let cancel = false;
-    setError(null);
-    setLoading(true);
-    (async () => {
-      setDoc(null);
-      setRendered(new Map());
-      setThumbs([]);
-      if (!url && !arrayBuffer) {
-        setError("No PDF source provided.");
-        setLoading(false);
-        return;
-      }
+    let active = true;
+
+    const loadPdf = async () => {
+      // If no source, do nothing
+      if (!url && !arrayBuffer) return;
+
+      setError(null);
+
       try {
-        const task = getDocument(
-          url ? { url, rangeChunkSize: 512 * 1024 } : { data: arrayBuffer! },
-        );
-        const pdf = await task.promise;
-        if (cancel) {
-          return;
-        }
-        setDoc(pdf);
-        setPageCount(pdf.numPages);
-        props.onPageCount(pdf.numPages);
+        // FIX 2: Clone the ArrayBuffer!
+        // PDF.js transfers the buffer to the worker, which "detaches" (empties) the original.
+        // We pass a slice (copy) so the original data in DocumentViewer remains valid.
+        const dataSource = arrayBuffer
+          ? { data: arrayBuffer.slice(0) }
+          : { url: url! };
 
-        // Get first page to determine aspect ratio and main render size
-        const p1 = await pdf.getPage(1);
-        const base = p1.getViewport({ scale: 1 });
-        const w = Math.min(980, Math.max(640, base.width));
-        const s = w / base.width;
-        const vp = p1.getViewport({ scale: s });
-        setSize({ w: Math.round(vp.width), h: Math.round(vp.height) });
+        const loadingTask = getDocument(dataSource);
 
-        // Generate all thumbnails up front
-        const thumbWidth = 56; // px, matches CSS .hv-thumbimg
-        const thumbsArr: Array<string | undefined> = [];
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const pageBase = page.getViewport({ scale: 1 });
-          const thumbScale = thumbWidth / pageBase.width;
-          const thumbVp = page.getViewport({ scale: thumbScale });
-          const thumbCanvas = document.createElement("canvas");
-          thumbCanvas.width = Math.round(thumbVp.width);
-          thumbCanvas.height = Math.round(thumbVp.height);
-          const thumbCtx = thumbCanvas.getContext("2d", { alpha: false });
-          if (thumbCtx) {
-            await page.render({ canvasContext: thumbCtx, viewport: thumbVp })
-              .promise;
-            thumbsArr.push(thumbCanvas.toDataURL("image/png"));
-          } else {
-            thumbsArr.push(undefined);
-          }
+        const pdf = await loadingTask.promise;
+
+        if (active) {
+          setDoc(pdf);
+          props.onPageCount(pdf.numPages);
+          generateThumbnails(pdf);
         }
-        setThumbs(thumbsArr);
-      } catch (e) {
-        setError(
-          "Failed to load PDF. " + (e instanceof Error ? e.message : ""),
-        );
-      } finally {
-        setLoading(false);
+      } catch (err: any) {
+        // Quietly handle errors (e.g. password protected files)
+        console.error("PDF Load Error:", err);
+        if (active) setError(err.message || "Failed to load PDF");
       }
-    })();
-    return () => {
-      cancel = true;
     };
-  }, [url, arrayBuffer]);
 
-  useEffect(() => {
-    props.onThumbs(thumbs);
-  }, [thumbs]);
+    loadPdf();
+    return () => {
+      active = false;
+    };
+  }, [url, arrayBuffer]); // Re-run if file changes
 
-  const pagesToShow = useMemo(() => {
-    if (props.layout === "side-by-side" && pageCount > 1) {
-      const left = Math.max(1, Math.min(props.currentPage, pageCount));
-      const right = Math.max(1, Math.min(left + 1, pageCount));
-      return left === right ? [left] : [left, right];
-    }
-    return [Math.max(1, Math.min(props.currentPage, pageCount))];
-  }, [props.currentPage, props.layout, pageCount]);
+  const generateThumbnails = async (pdf: PDFDocumentProxy) => {
+    try {
+      const thumbs: string[] = [];
+      const num = Math.min(pdf.numPages, 5);
+      for (let i = 1; i <= num; i++) {
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 0.2 });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
 
-  useEffect(() => {
-    if (!doc) {
-      return;
-    }
-    let cancel = false;
-    (async () => {
-      for (const p of pagesToShow) {
-        if (rendered.has(p)) {
-          continue;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          thumbs.push(canvas.toDataURL());
         }
-        try {
-          const page = await doc.getPage(p);
-          if (cancel) {
-            return;
-          }
-          const base = page.getViewport({ scale: 1 });
-          const vp = page.getViewport({ scale: size.w / base.width });
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.round(vp.width);
-          canvas.height = Math.round(vp.height);
-          const ctx = canvas.getContext("2d", { alpha: false });
-          if (!ctx) {
-            continue;
-          }
-          await page.render({ canvasContext: ctx, viewport: vp }).promise;
-          if (cancel) {
-            return;
-          }
-          setRendered((prev) => {
-            const next = new Map(prev);
-            next.set(p, canvas);
-            return next;
-          });
-        } catch {}
       }
-    })();
-    return () => {
-      cancel = true;
-    };
-  }, [doc, pagesToShow, size.w, rendered]);
+      props.onThumbs(thumbs);
+    } catch (e) {
+      /* ignore */
+    }
+  };
 
-  function onWheel(e: React.WheelEvent) {
-    if (!pageCount) {
-      return;
+  const pagesToRender = useMemo(() => {
+    if (!doc) return [];
+    const p = Math.max(1, Math.min(currentPage, doc.numPages));
+    if (layout === "side-by-side" && doc.numPages > 1) {
+      if (p === 1) return [1];
+      const left = p % 2 === 0 ? p : p - 1;
+      return left + 1 <= doc.numPages ? [left, left + 1] : [left];
     }
-    if (Math.abs(e.deltaY) < 10) {
-      return;
-    }
-    const dir = e.deltaY > 0 ? 1 : -1;
-    const step = props.layout === "side-by-side" ? 2 : 1;
-    const next = Math.max(
-      1,
-      Math.min(pageCount, props.currentPage + dir * step),
+    return [p];
+  }, [doc, currentPage, layout]);
+
+  if (error) {
+    return (
+      <div
+        className="hv-page-container"
+        style={{ padding: "32px", textAlign: "center", color: "#dc2626" }}
+      >
+        <strong>Error loading PDF</strong>
+        <p className="text-sm mt-2">{error}</p>
+      </div>
     );
-    props.onCurrentPageChange(next);
-  }
-
-  function clickPlace(e: React.MouseEvent, page: number) {
-    const stamp = props.signatureStamp;
-    if (!stamp?.armed) {
-      return;
-    }
-    const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    stamp.onPlaced({ page, x, y, w: 0.22, h: 0.08 });
   }
 
   return (
-    <div className="hv-doc" ref={containerRef} onWheel={onWheel}>
-      {!doc ? <div className="hv-loading">Loading PDF…</div> : null}
-      {doc ? (
-        <div
-          className={
-            props.layout === "side-by-side"
-              ? "hv-pages hv-pages--two"
-              : "hv-pages"
-          }
-        >
-          {pagesToShow.map((p) => {
-            const c = rendered.get(p);
-            return (
-              <div
-                key={p}
-                className="hv-page"
-                style={{ width: size.w, height: size.h }}
-                onClick={(e) => clickPlace(e, p)}
-              >
-                {c ? (
-                  <canvas
-                    className="hv-canvas"
-                    width={c.width}
-                    height={c.height}
-                    ref={(node) => {
-                      if (!node) {
-                        return;
-                      }
-                      const ctx = node.getContext("2d");
-                      if (ctx) {
-                        ctx.drawImage(c, 0, 0);
-                      }
-                    }}
-                  />
-                ) : (
-                  <div className="hv-loading">Rendering…</div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
+    <div
+      className={`hv-doc-scroll ${layout === "side-by-side" ? "hv-view-double" : "hv-view-single"}`}
+    >
+      {pagesToRender.map((page) => (
+        <PdfPage key={page} doc={doc} pageNum={page} />
+      ))}
+    </div>
+  );
+}
+
+function PdfPage({
+  doc,
+  pageNum,
+}: {
+  doc: PDFDocumentProxy | null;
+  pageNum: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    if (!doc || !canvasRef.current) return;
+    let active = true;
+
+    const render = async () => {
+      try {
+        const page = await doc.getPage(pageNum);
+        if (!active) return;
+
+        const scale = 1.5; // High fidelity
+        const viewport = page.getViewport({ scale });
+        const canvas = canvasRef.current!;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+
+        canvas.style.width = `${viewport.width / scale}px`;
+        canvas.style.height = `${viewport.height / scale}px`;
+
+        await page.render({ canvasContext: ctx, viewport }).promise;
+      } catch (e) {
+        console.error("Page render error:", e);
+      }
+    };
+    render();
+    return () => {
+      active = false;
+    };
+  }, [doc, pageNum]);
+
+  return (
+    <div
+      className="hv-page-container"
+      style={{
+        minHeight: "600px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <canvas ref={canvasRef} className="hv-pdf-canvas" />
     </div>
   );
 }
