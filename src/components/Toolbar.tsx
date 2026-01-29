@@ -30,6 +30,7 @@ interface ToolbarProps {
   // Right Sidebar (Signatures)
   showSignatures: boolean;
   onToggleSignatures: () => void;
+  disableSigning?: boolean;
 }
 
 export function Toolbar(props: ToolbarProps) {
@@ -155,14 +156,16 @@ export function Toolbar(props: ToolbarProps) {
         />
 
         {/* Signature Toggle Button */}
-        <button
-          className={`hv-btn hv-btn-primary ${props.showSignatures ? "ring-2 ring-indigo-300" : ""}`}
-          onClick={props.onToggleSignatures}
-          title="Sign Document"
-        >
-          <PenLine size={18} className="mr-2" />
-          <span className="hidden sm:inline">Sign</span>
-        </button>
+        {!props.disableSigning && (
+          <button
+            className={`hv-btn hv-btn-primary ${props.showSignatures ? "ring-2 ring-indigo-300" : ""}`}
+            onClick={props.onToggleSignatures}
+            title="Sign Document"
+          >
+            <PenLine size={18} className="mr-2" />
+            <span className="hidden sm:inline">Sign</span>
+          </button>
+        )}
       </div>
     </div>
   );

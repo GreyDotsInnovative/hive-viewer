@@ -28,7 +28,9 @@ export function DocumentViewer(props: DocumentViewerProps) {
   const [layout, setLayout] = useState<"single" | "side-by-side">(
     props.defaultLayout ?? "single",
   );
-  const [showThumbnails, setShowThumbnails] = useState(true);
+  const [showThumbnails, setShowThumbnails] = useState(
+    props.defaultShowThumbnails ?? true,
+  );
   const [showSignatures, setShowSignatures] = useState(false); // [2] New State for Right Sidebar
 
   // Data Loading State
@@ -188,6 +190,7 @@ export function DocumentViewer(props: DocumentViewerProps) {
         // Right Sidebar (Signatures) - [4] Replaced Download with Signature Toggle
         showSignatures={showSignatures}
         onToggleSignatures={() => setShowSignatures(!showSignatures)}
+        disableSigning={props.disableSigning}
       />
 
       <div className="hv-shell">
@@ -207,6 +210,8 @@ export function DocumentViewer(props: DocumentViewerProps) {
           isOpen={showSignatures}
           onClose={() => setShowSignatures(false)}
           onSelectSignature={handleSignatureSelect}
+          externalSignatures={props.signatures}
+          onSignRequest={props.onSignRequest}
         />
       </div>
     </div>

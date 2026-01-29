@@ -8,18 +8,53 @@ interface SignaturePanelProps {
   isOpen: boolean;
   onClose: () => void;
   onSelectSignature: (sig: Signature) => void;
+  externalSignatures?: Signature[];
+  onSignRequest?: () => Promise<Signature>;
 }
 
 export function SignaturePanel(props: SignaturePanelProps) {
-  const { isOpen, onClose, onSelectSignature } = props;
-  const [signatures, setSignatures] = useState<Signature[]>([]);
+  const {
+    isOpen,
+    onClose,
+    onSelectSignature,
+    externalSignatures = [],
+    onSignRequest,
+  } = props;
+  const [localSignatures, setLocalSignatures] = useState<Signature[]>([]);
   const [showModal, setShowModal] = useState(false);
+
+  // Combine external + local
+  const signatures = [...externalSignatures, ...localSignatures];
 
   // Drawing state
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
 
   // --- Modal Logic ---
+  const handleCreateClick = async () => {
+    if (onSignRequest) {
+      try {
+        const newSig = await onSignRequest();
+        if (newSig) {
+          // If the user provides a signature, we can choose to add it to local list
+          // so it appears in the list here.
+          // Note: If the parent manages state driven by "externalSignatures",
+          // this might duplicate if we also add it locally.
+          // However, typically onSignRequest implies external control.
+          // Let's assume onSignRequest returns the signature and we should add it local
+          // for immediate use, UNLESS the parent updates externalSignatures.
+          // To be safe and simple: Add to local.
+          setLocalSignatures((prev) => [...prev, newSig]);
+          onSelectSignature(newSig);
+        }
+      } catch (err) {
+        console.error("Custom sign request failed", err);
+      }
+    } else {
+      openCreateModal();
+    }
+  };
+
   const openCreateModal = () => {
     setShowModal(true);
     setTimeout(() => {
@@ -42,7 +77,7 @@ export function SignaturePanel(props: SignaturePanelProps) {
       dateSigned: new Date().toISOString(),
     };
 
-    setSignatures([...signatures, newSig]);
+    setLocalSignatures([...localSignatures, newSig]);
     setShowModal(false);
     onSelectSignature(newSig);
   };
@@ -101,7 +136,7 @@ export function SignaturePanel(props: SignaturePanelProps) {
 
         <div className="hv-thumb-list">
           <button
-            onClick={openCreateModal}
+            onClick={handleCreateClick}
             className="hv-btn"
             style={{
               width: "100%",
@@ -115,55 +150,73 @@ export function SignaturePanel(props: SignaturePanelProps) {
             New Signature
           </button>
 
-          {signatures.map((sig) => (
-            <div
-              key={sig.id}
-              className="hv-thumb-item"
-              style={{
-                position: "relative",
-                padding: "12px",
-                background: "var(--hv-bg)",
-                borderRadius: "8px",
-                border: "1px solid var(--hv-border)",
-              }}
-              onClick={() => onSelectSignature(sig)}
-            >
-              <img
-                src={sig.signatureImageUrl}
-                alt="Signature"
-                style={{ height: "40px", objectFit: "contain" }}
-              />
-              <div
-                style={{
-                  fontSize: "11px",
-                  color: "var(--hv-muted)",
-                  marginTop: "4px",
-                  textAlign: "center",
-                }}
-              >
-                {new Date(sig.dateSigned).toLocaleDateString()}
-              </div>
+          {signatures.map((sig, idx) => {
+            const isLocal = localSignatures.some((s) => s.id === sig.id);
+            // If it's not local, we assume it's external, so we might want to disable delete
+            // or handle it differently.
+            // For now, only show delete for local items to avoid state mismatch.
+            const showDelete = isLocal;
 
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSignatures(signatures.filter((s) => s.id !== sig.id));
-                }}
-                className="hv-btn"
+            return (
+              <div
+                key={sig.id || idx}
+                className="hv-thumb-item"
                 style={{
-                  position: "absolute",
-                  top: "4px",
-                  right: "4px",
-                  padding: "4px",
-                  color: "#ef4444",
-                  border: "none",
-                  background: "white",
+                  position: "relative",
+                  padding: "12px",
+                  background: "var(--hv-bg)",
+                  borderRadius: "8px",
+                  border: "1px solid var(--hv-border)",
                 }}
+                onClick={() => onSelectSignature(sig)}
               >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
+                <img
+                  src={sig.signatureImageUrl}
+                  alt="Signature"
+                  style={{ height: "40px", objectFit: "contain" }}
+                />
+                <div
+                  style={{
+                    fontSize: "11px",
+                    color: "var(--hv-muted)",
+                    marginTop: "4px",
+                    textAlign: "center",
+                  }}
+                >
+                  {sig.signedBy || "User"} •{" "}
+                  {new Date(sig.dateSigned).toLocaleDateString()}
+                  {sig.comment && (
+                    <div className="text-xs text-gray-500 mt-1 italic">
+                      {sig.comment}
+                    </div>
+                  )}
+                </div>
+
+                {showDelete && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setLocalSignatures(
+                        localSignatures.filter((s) => s.id !== sig.id),
+                      );
+                    }}
+                    className="hv-btn"
+                    style={{
+                      position: "absolute",
+                      top: "4px",
+                      right: "4px",
+                      padding: "4px",
+                      color: "#ef4444",
+                      border: "none",
+                      background: "white",
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 

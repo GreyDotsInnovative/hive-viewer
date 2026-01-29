@@ -45,7 +45,9 @@ export interface DocumentViewerProps {
 
   mode?: DocumentMode;
   allowSigning?: boolean;
+  disableSigning?: boolean; // New prop
   defaultLayout?: PageLayout;
+  defaultShowThumbnails?: boolean; // New prop
 
   headerComponent?: React.ReactNode;
   footerComponent?: React.ReactNode;
