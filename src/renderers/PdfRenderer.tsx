@@ -6,34 +6,61 @@ import {
   type PDFDocumentProxy,
 } from "pdfjs-dist";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { PageLayout } from "../types";
+import { SignatureOverlay } from "../components/SignatureOverlay";
+import type { DocumentSurfaceOverlayState, PageLayout } from "../types";
 
-// FIX 1: Updated version to match the error message (4.10.38)
-const PDF_WORKER_URL =
-  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs";
+let pdfWorkerBlobUrlPromise: Promise<string> | null = null;
+
+function yieldToBrowser() {
+  return new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+async function resolvePdfWorkerSrc(customWorkerSrc?: string) {
+  if (customWorkerSrc) {
+    return customWorkerSrc;
+  }
+
+  if (!pdfWorkerBlobUrlPromise) {
+    pdfWorkerBlobUrlPromise = import("../../generated/pdfWorkerBundle")
+      .then(({ pdfWorkerBundleSource }) =>
+        URL.createObjectURL(
+          new Blob([pdfWorkerBundleSource], { type: "text/javascript" }),
+        ),
+      )
+      .catch((error) => {
+        pdfWorkerBlobUrlPromise = null;
+        throw error;
+      });
+  }
+
+  return pdfWorkerBlobUrlPromise;
+}
 
 interface PdfRendererProps {
   url?: string;
   arrayBuffer?: ArrayBuffer;
+  workerSrc?: string;
+  locale: Record<string, string>;
   layout: PageLayout;
   currentPage: number;
   onPageCount: (n: number) => void;
   onCurrentPageChange: (p: number) => void;
-  onThumbs: (thumbs: string[]) => void;
+  onThumbs: (thumbs: Array<string | undefined>) => void;
+  signatureOverlay: DocumentSurfaceOverlayState;
 }
 
 export function PdfRenderer(props: PdfRendererProps) {
-  const { url, arrayBuffer, layout, currentPage } = props;
+  const { url, arrayBuffer, layout, currentPage, workerSrc } = props;
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const thumbnailJobRef = useRef(0);
 
   useEffect(() => {
-    // Ensure worker is set up
-    if (!GlobalWorkerOptions.workerSrc) {
-      GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
-    }
-
     let active = true;
+    const thumbnailJobId = thumbnailJobRef.current + 1;
+    thumbnailJobRef.current = thumbnailJobId;
 
     const loadPdf = async () => {
       // If no source, do nothing
@@ -42,6 +69,8 @@ export function PdfRenderer(props: PdfRendererProps) {
       setError(null);
 
       try {
+        GlobalWorkerOptions.workerSrc = await resolvePdfWorkerSrc(workerSrc);
+
         // FIX 2: Clone the ArrayBuffer!
         // PDF.js transfers the buffer to the worker, which "detaches" (empties) the original.
         // We pass a slice (copy) so the original data in DocumentViewer remains valid.
@@ -56,7 +85,7 @@ export function PdfRenderer(props: PdfRendererProps) {
         if (active) {
           setDoc(pdf);
           props.onPageCount(pdf.numPages);
-          generateThumbnails(pdf);
+          void generateThumbnails(pdf, thumbnailJobId);
         }
       } catch (err: any) {
         // Quietly handle errors (e.g. password protected files)
@@ -68,14 +97,25 @@ export function PdfRenderer(props: PdfRendererProps) {
     loadPdf();
     return () => {
       active = false;
+      thumbnailJobRef.current += 1;
     };
-  }, [url, arrayBuffer]); // Re-run if file changes
+  }, [url, arrayBuffer, workerSrc]); // Re-run if file changes
 
-  const generateThumbnails = async (pdf: PDFDocumentProxy) => {
+  const generateThumbnails = async (
+    pdf: PDFDocumentProxy,
+    thumbnailJobId: number,
+  ) => {
     try {
-      const thumbs: string[] = [];
-      const num = Math.min(pdf.numPages, 5);
-      for (let i = 1; i <= num; i++) {
+      const thumbs: Array<string | undefined> = Array.from({
+        length: pdf.numPages,
+      });
+      props.onThumbs([...thumbs]);
+
+      for (let i = 1; i <= pdf.numPages; i++) {
+        if (thumbnailJobRef.current !== thumbnailJobId) {
+          return;
+        }
+
         const page = await pdf.getPage(i);
         const viewport = page.getViewport({ scale: 0.2 });
         const canvas = document.createElement("canvas");
@@ -85,10 +125,24 @@ export function PdfRenderer(props: PdfRendererProps) {
         const ctx = canvas.getContext("2d");
         if (ctx) {
           await page.render({ canvasContext: ctx, viewport }).promise;
-          thumbs.push(canvas.toDataURL());
+          if (thumbnailJobRef.current !== thumbnailJobId) {
+            return;
+          }
+          thumbs[i - 1] = canvas.toDataURL();
+        }
+
+        if (i === 1 || i === pdf.numPages || i % 4 === 0) {
+          props.onThumbs([...thumbs]);
+        }
+
+        if (i % 4 === 0) {
+          await yieldToBrowser();
         }
       }
-      props.onThumbs(thumbs);
+
+      if (thumbnailJobRef.current === thumbnailJobId) {
+        props.onThumbs([...thumbs]);
+      }
     } catch (e) {
       /* ignore */
     }
@@ -107,12 +161,11 @@ export function PdfRenderer(props: PdfRendererProps) {
 
   if (error) {
     return (
-      <div
-        className="hv-page-container"
-        style={{ padding: "32px", textAlign: "center", color: "#dc2626" }}
-      >
-        <strong>Error loading PDF</strong>
-        <p className="text-sm mt-2">{error}</p>
+      <div className="hv-page-container" style={{ padding: "32px" }}>
+        <div className="hv-error-banner">
+          <strong>{props.locale["documents.pdfLoadErrorTitle"]}</strong>
+          <p>{error}</p>
+        </div>
       </div>
     );
   }
@@ -122,7 +175,12 @@ export function PdfRenderer(props: PdfRendererProps) {
       className={`hv-doc-scroll ${layout === "side-by-side" ? "hv-view-double" : "hv-view-single"}`}
     >
       {pagesToRender.map((page) => (
-        <PdfPage key={page} doc={doc} pageNum={page} />
+        <PdfPage
+          key={page}
+          doc={doc}
+          pageNum={page}
+          signatureOverlay={props.signatureOverlay}
+        />
       ))}
     </div>
   );
@@ -131,9 +189,11 @@ export function PdfRenderer(props: PdfRendererProps) {
 function PdfPage({
   doc,
   pageNum,
+  signatureOverlay,
 }: {
   doc: PDFDocumentProxy | null;
   pageNum: number;
+  signatureOverlay: PdfRendererProps["signatureOverlay"];
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -180,6 +240,37 @@ function PdfPage({
       }}
     >
       <canvas ref={canvasRef} className="hv-pdf-canvas" />
+      <SignatureOverlay
+        surfaceKey={`page:${pageNum}`}
+        surfaceKind="page"
+        page={pageNum}
+        placements={signatureOverlay.placements}
+        annotations={signatureOverlay.annotations}
+        pendingSignature={signatureOverlay.pendingSignature}
+        pendingAnnotation={signatureOverlay.pendingAnnotation}
+        activePlacementId={signatureOverlay.activePlacementId}
+        activeAnnotationId={signatureOverlay.activeAnnotationId}
+        placeHint={signatureOverlay.placeHint}
+        annotationHint={signatureOverlay.annotationHint}
+        annotationPlaceholder={signatureOverlay.annotationPlaceholder}
+        signatureAltLabel={signatureOverlay.signatureAltLabel}
+        signatureAltByLabel={signatureOverlay.signatureAltByLabel}
+        signatureNoteIndicatorLabel={signatureOverlay.signatureNoteIndicatorLabel}
+        removeSignatureLabel={signatureOverlay.removeSignatureLabel}
+        annotationTitle={signatureOverlay.annotationTitle}
+        linkedAnnotationTitle={signatureOverlay.linkedAnnotationTitle}
+        linkedAnnotationBadge={signatureOverlay.linkedAnnotationBadge}
+        openAnnotationLabel={signatureOverlay.openAnnotationLabel}
+        removeAnnotationLabel={signatureOverlay.removeAnnotationLabel}
+        onPlaceSignature={signatureOverlay.onPlaceSignature}
+        onPlaceAnnotation={signatureOverlay.onPlaceAnnotation}
+        onUpdatePlacement={signatureOverlay.onUpdatePlacement}
+        onUpdateAnnotation={signatureOverlay.onUpdateAnnotation}
+        onRemovePlacement={signatureOverlay.onRemovePlacement}
+        onRemoveAnnotation={signatureOverlay.onRemoveAnnotation}
+        onSelectPlacement={signatureOverlay.onSelectPlacement}
+        onSelectAnnotation={signatureOverlay.onSelectAnnotation}
+      />
     </div>
   );
 }

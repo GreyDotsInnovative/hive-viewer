@@ -3,13 +3,14 @@
 import {
   ChevronLeft,
   ChevronRight,
+  FileDown,
   Grid2X2,
   LayoutTemplate,
+  MessageSquarePlus,
   PanelLeftClose,
   PanelLeftOpen,
   PenLine, // Changed from Download
-  PanelRightClose,
-  PanelRightOpen,
+  Save,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -20,6 +21,9 @@ interface ToolbarProps {
   pageCount: number;
   currentPage: number;
   onPageChange: (page: number) => void;
+  showHeaderFooterToggle: boolean;
+  headerFooterVisible: boolean;
+  onToggleHeaderFooter: () => void;
   layout: "single" | "side-by-side";
   onLayoutChange: (layout: "single" | "side-by-side") => void;
 
@@ -30,7 +34,21 @@ interface ToolbarProps {
   // Right Sidebar (Signatures)
   showSignatures: boolean;
   onToggleSignatures: () => void;
-  disableSigning?: boolean;
+  signingEnabled: boolean;
+  annotationEnabled: boolean;
+  annotationMode: boolean;
+  onToggleAnnotationMode: () => void;
+
+  // Zoom
+  zoom: number;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onZoomReset: () => void;
+  saveEnabled: boolean;
+  isSaving: boolean;
+  onSave?: () => void;
+  onExportPdf?: () => void;
+  locale: Record<string, string>;
 }
 
 export function Toolbar(props: ToolbarProps) {
@@ -39,8 +57,20 @@ export function Toolbar(props: ToolbarProps) {
     pageCount,
     currentPage,
     onPageChange,
+    showHeaderFooterToggle,
+    headerFooterVisible,
+    onToggleHeaderFooter,
     layout,
     onLayoutChange,
+    zoom,
+    onZoomIn,
+    onZoomOut,
+    onZoomReset,
+    saveEnabled,
+    isSaving,
+    onSave,
+    onExportPdf,
+    locale,
   } = props;
 
   const handlePrev = () => {
@@ -65,7 +95,7 @@ export function Toolbar(props: ToolbarProps) {
         <button
           className={`hv-btn ${props.showThumbnails ? "hv-btn-active" : ""}`}
           onClick={props.onToggleThumbnails}
-          title="Toggle Thumbnails"
+          title={locale["toolbar.thumbs"]}
         >
           {props.showThumbnails ? (
             <PanelLeftClose size={20} />
@@ -106,16 +136,16 @@ export function Toolbar(props: ToolbarProps) {
           <ChevronLeft size={20} />
         </button>
 
-        <div className="flex items-center gap-2 text-sm font-medium text-gray-600">
+        <div className="hv-toolbar-page-group">
           <input
             type="number"
-            className="w-12 text-center border rounded py-1 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+            className="hv-toolbar-page-input"
             value={currentPage}
             onChange={handleInput}
             min={1}
             max={pageCount}
           />
-          <span className="text-gray-400">/</span>
+          <span className="hv-toolbar-page-sep">/</span>
           <span>{pageCount}</span>
         </div>
 
@@ -128,21 +158,32 @@ export function Toolbar(props: ToolbarProps) {
         </button>
       </div>
 
-      {/* Right Group: Layout & Signatures */}
+      {/* Right Group: Layout, Save & Signatures */}
       <div className="hv-toolbar-group">
         <button
-          className={`hv-btn ${layout === "single" ? "hv-btn-active text-indigo-600 bg-indigo-50" : ""}`}
-          onClick={() => onLayoutChange("single")}
-          title="Single Page View"
+          className="hv-btn"
+          onClick={onZoomOut}
+          title={locale["toolbar.zoomOut"]}
+          disabled={zoom <= 0.5}
         >
-          <LayoutTemplate size={18} />
+          <ZoomOut size={18} />
         </button>
         <button
-          className={`hv-btn ${layout === "side-by-side" ? "hv-btn-active text-indigo-600 bg-indigo-50" : ""}`}
-          onClick={() => onLayoutChange("side-by-side")}
-          title="Two Page View"
+          className="hv-btn"
+          onClick={onZoomReset}
+          title={locale["toolbar.zoomReset"]}
         >
-          <Grid2X2 size={18} />
+          <span style={{ fontSize: "12px", fontWeight: 600 }}>
+            {Math.round(zoom * 100)}%
+          </span>
+        </button>
+        <button
+          className="hv-btn"
+          onClick={onZoomIn}
+          title={locale["toolbar.zoomIn"]}
+          disabled={zoom >= 2}
+        >
+          <ZoomIn size={18} />
         </button>
 
         <div
@@ -155,15 +196,98 @@ export function Toolbar(props: ToolbarProps) {
           }}
         />
 
-        {/* Signature Toggle Button */}
-        {!props.disableSigning && (
+        <button
+          className={`hv-btn ${layout === "single" ? "hv-btn-active" : ""}`}
+          onClick={() => onLayoutChange("single")}
+          title={locale["toolbar.layout.single"]}
+        >
+          <LayoutTemplate size={18} />
+        </button>
+        <button
+          className={`hv-btn ${layout === "side-by-side" ? "hv-btn-active" : ""}`}
+          onClick={() => onLayoutChange("side-by-side")}
+          title={locale["toolbar.layout.two"]}
+        >
+          <Grid2X2 size={18} />
+        </button>
+
+        {showHeaderFooterToggle && (
           <button
-            className={`hv-btn hv-btn-primary ${props.showSignatures ? "ring-2 ring-indigo-300" : ""}`}
-            onClick={props.onToggleSignatures}
-            title="Sign Document"
+            className={`hv-btn ${headerFooterVisible ? "hv-btn-active" : ""}`}
+            onClick={onToggleHeaderFooter}
+            title={locale["toolbar.headerFooter"]}
           >
-            <PenLine size={18} className="mr-2" />
-            <span className="hidden sm:inline">Sign</span>
+            <span style={{ fontSize: "12px", fontWeight: 700, marginRight: "8px" }}>
+              HF
+            </span>
+            <span className="hv-btn-label">{locale["toolbar.headerFooter"]}</span>
+          </button>
+        )}
+
+        <div
+          className="hv-sep"
+          style={{
+            width: 1,
+            height: 24,
+            background: "var(--hv-border)",
+            margin: "0 8px",
+          }}
+        />
+
+        {saveEnabled && (
+          <>
+            <button
+              className="hv-btn"
+              onClick={onExportPdf}
+              title={locale["toolbar.exportPdf"]}
+              disabled={isSaving}
+            >
+              <FileDown size={18} />
+            </button>
+            <button
+              className="hv-btn hv-btn-primary"
+              onClick={onSave}
+              title={locale["toolbar.save"]}
+              disabled={isSaving}
+            >
+              <Save size={18} style={{ marginRight: "8px" }} />
+              <span className="hv-btn-label">
+                {isSaving ? locale.loading : locale["toolbar.save"]}
+              </span>
+            </button>
+
+            <div
+              className="hv-sep"
+              style={{
+                width: 1,
+                height: 24,
+                background: "var(--hv-border)",
+                margin: "0 8px",
+              }}
+            />
+          </>
+        )}
+
+        {/* Signature Toggle Button */}
+        {props.annotationEnabled && (
+          <button
+            className={`hv-btn ${props.annotationMode ? "hv-btn-active" : ""}`}
+            onClick={props.onToggleAnnotationMode}
+            title={locale["toolbar.annotate"]}
+          >
+            <MessageSquarePlus size={18} style={{ marginRight: "8px" }} />
+            <span className="hv-btn-label">{locale["toolbar.annotate"]}</span>
+          </button>
+        )}
+
+        {props.signingEnabled && (
+          <button
+            className={`hv-btn hv-btn-primary ${props.showSignatures ? "hv-btn-active" : ""}`}
+            onClick={props.onToggleSignatures}
+            title={locale["toolbar.sign"]}
+          >
+            <PenLine size={18} style={{ marginRight: "8px" }} />
+            <span className="hv-btn-label">{locale["toolbar.sign"]}</span>
           </button>
         )}
       </div>

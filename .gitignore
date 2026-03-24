@@ -1,6 +1,7 @@
 # dependencies
 /node_modules
 /dist
+/generated
 
 # environment variables
 .env

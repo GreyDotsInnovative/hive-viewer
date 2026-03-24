@@ -3,14 +3,14 @@
   "version": "1.0.1",
   "license": "MIT",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "require": "./dist/index.cjs"
     },
     "./styles.css": "./dist/styles.css"
   },
@@ -33,14 +33,18 @@
     "react-dom": ">=18"
   },
   "dependencies": {
+    "docx": "^9.6.1",
+    "docx-preview": "^0.3.7",
     "dompurify": "^3.1.7",
-    "html-to-docx": "^1.8.0",
+    "exceljs": "^4.4.0",
     "html2canvas": "^1.4.1",
     "jszip": "^3.10.1",
     "lucide-react": "^0.562.0",
     "mammoth": "^1.8.0",
     "markdown-it": "^14.1.0",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.7.76",
+    "pptxgenjs": "^4.0.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
@@ -55,6 +59,12 @@
   },
   "scripts": {
     "build": "tsup",
-    "dev": "tsup --watch"
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test:smoke": "node scripts/package-smoke.test.mjs",
+    "test:regression": "node scripts/package-regression.test.mjs",
+    "test": "npm run test:smoke && npm run test:regression",
+    "verify": "npm run typecheck && npm run build && npm run test",
+    "prepublishOnly": "npm run verify"
   }
 }

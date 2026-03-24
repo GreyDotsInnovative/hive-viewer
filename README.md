@@ -1,179 +1,516 @@
-# ModalViewer Usage Example
-
-You can use the ModalViewer component to display any content (such as DocumentViewer) in a modal dialog. Here is a simple example:
-
-```tsx
-import React, { useState } from 'react';
-import { ModalViewer } from './src/components/ModalViewer';
-import { DocumentViewer } from './src/components/DocumentViewer';
-import './src/components/ModalViewer.css';
-
-export default function App() {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button onClick={() => setOpen(true)}>Open Document Modal</button>
-      <ModalViewer open={open} onClose={() => setOpen(false)}>
-        <DocumentViewer url="/path/to/document.pdf" />
-      </ModalViewer>
-    </>
-  );
-}
-```
-
-**Props:**
-
-- `open` (boolean): Whether the modal is visible.
-- `onClose` (function): Called when the modal requests to close (overlay click, ESC, close button).
-- `children` (ReactNode): Content to display inside the modal.
-- `ariaLabel` (optional string): Accessibility label for the modal dialog.
-
-**Styling:**
-
-Import `ModalViewer.css` for default modal styles, or customize as needed.
 # @zerohive/hive-viewer
 
-A self-hostable, browser-first document viewer/editor for React and Next.js.
+`@zerohive/hive-viewer` is a browser-first React document viewer with signing, annotations, save, and export workflows.
+
+It is designed for product teams that need to:
+
+- open a document from a URL, `base64`, or `Blob`
+- let users review it in-app
+- place signatures and annotations on the document surface
+- save or export the result
+- persist the returned file and metadata in their own backend
 
 ## Install
 
 ```bash
-npm i @zerohive/hive-viewer
+npm install @zerohive/hive-viewer
 ```
 
-Import styles once in your app:
+Import the stylesheet once in your app:
 
 ```ts
 import "@zerohive/hive-viewer/styles.css";
 ```
 
-## Usage
+## Next.js Usage
 
-### Basic Usage
+The viewer uses browser APIs, so in Next.js it should be rendered client-side.
 
 ```tsx
-import { DocumentViewer } from "@zerohive/hive-viewer";
+"use client";
+
+import dynamic from "next/dynamic";
+import "@zerohive/hive-viewer/styles.css";
+
+const DocumentViewer = dynamic(
+  async () => (await import("@zerohive/hive-viewer")).DocumentViewer,
+  { ssr: false },
+);
 
 export default function Page() {
   return (
     <DocumentViewer
-      mode="edit"
-      fileUrl="https://example.com/my.pdf"
-      fileName="my.pdf"
+      mode="view"
+      fileUrl="https://example.com/contracts/master-service-agreement.pdf"
+      fileName="master-service-agreement.pdf"
       fileType="pdf"
-      allowSigning
-      onSignRequest={async () => ({
-        signatureImageUrl: "https://.../sig.png",
-        signedBy: "Jane Doe",
-        dateSigned: new Date().toISOString(),
-        comment: "Approved",
-      })}
-      onSave={(b64, meta) => {
-        /* persist */
-      }}
     />
   );
 }
 ```
 
-### Using in a Modal (Recommended)
+## What The Package Does
 
-Most consumers use the viewer in a modal dialog. Here is a recommended pattern:
+At a high level, the package works like this:
+
+1. You pass a document source into `DocumentViewer`.
+2. The viewer picks the right renderer for the file type.
+3. Users can navigate, zoom, sign, and annotate.
+4. Signature placements and annotations are tracked as structured JSON metadata.
+5. When the user saves, the package returns:
+   - the saved file as `base64`
+   - metadata describing the saved file
+   - the signature placements and annotations used in the review
+
+That makes the package useful for both:
+
+- final file generation
+- restoring a review session later
+
+## Supported Sources
+
+You can load a document using one of these props:
+
+- `fileUrl`
+- `base64`
+- `blob`
+
+You should also provide:
+
+- `fileName`
+- `fileType`
+
+## Supported File Types
+
+Best-supported document types:
+
+- `pdf`
+- `docx`
+- `md`
+- `txt`
+- `xlsx`
+- `csv`
+- `pptx`
+- `png`
+- `jpg`
+- `jpeg`
+- `gif`
+- `bmp`
+- `svg`
+
+Accepted legacy formats with more limited fidelity:
+
+- `doc`
+- `rtf`
+- `xls`
+- `ppt`
+
+## Viewer Modes
+
+`DocumentViewer` supports three modes:
+
+- `view`
+  For document review and signing.
+- `edit`
+  For editable text and spreadsheet-style workflows where supported.
+- `create`
+  For building a new document session from the chosen `fileType`.
+
+## Basic Example
 
 ```tsx
-import React, { useState } from "react";
-import { DocumentViewer } from "@zerohive/hive-viewer";
+"use client";
 
-function ModalDocViewer({ open, onClose, fileUrl, fileName, fileType }) {
-  if (!open) return null;
+import { useState } from "react";
+import {
+  DocumentViewer,
+  type AnnotationPlacement,
+  type DocumentViewerSaveMeta,
+  type Signature,
+  type SignaturePlacement,
+} from "@zerohive/hive-viewer";
+import "@zerohive/hive-viewer/styles.css";
+
+export default function ContractReview() {
+  const [signatures, setSignatures] = useState<Signature[]>([]);
+  const [signaturePlacements, setSignaturePlacements] = useState<
+    SignaturePlacement[]
+  >([]);
+  const [annotations, setAnnotations] = useState<AnnotationPlacement[]>([]);
+
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.45)",
-        zIndex: 1000,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
+    <DocumentViewer
+      mode="view"
+      fileUrl="https://example.com/contracts/msa.pdf"
+      fileName="msa.pdf"
+      fileType="pdf"
+      allowSigning
+      allowAnnotations
+      signatures={signatures}
+      signaturePlacements={signaturePlacements}
+      annotations={annotations}
+      onSignRequest={async () => {
+        const signature = {
+          id: crypto.randomUUID(),
+          signatureImageUrl: "data:image/png;base64,...",
+          signedBy: "Jane Doe",
+          dateSigned: new Date().toISOString(),
+        };
+
+        setSignatures((prev) => [...prev, signature]);
+        return signature;
       }}
-    >
-      <div
-        style={{
-          background: "#fff",
-          borderRadius: 16,
-          maxWidth: "90vw",
-          maxHeight: "90vh",
-          overflow: "auto",
-          position: "relative",
-          padding: 0,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.25)",
-        }}
-      >
-        <button
-          onClick={onClose}
-          aria-label="Close"
-          style={{
-            position: "absolute",
-            top: 12,
-            right: 16,
-            background: "none",
-            border: "none",
-            fontSize: "2rem",
-            color: "#888",
-            cursor: "pointer",
-            zIndex: 1,
-          }}
-        >
-          ×
-        </button>
-        <DocumentViewer
-          mode="view"
-          fileUrl={fileUrl}
-          fileName={fileName}
-          fileType={fileType}
-        />
-      </div>
-    </div>
+      onSignaturePlacementsChange={setSignaturePlacements}
+      onAnnotationsChange={setAnnotations}
+      onSave={async (editedFileAsBase64, meta) => {
+        await saveToBackend(editedFileAsBase64, meta);
+      }}
+    />
   );
 }
 
-// Usage example:
-export default function Example() {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button onClick={() => setOpen(true)}>Open Document</button>
-      <ModalDocViewer
-        open={open}
-        onClose={() => setOpen(false)}
-        fileUrl="https://example.com/my.pdf"
-        fileName="my.pdf"
-        fileType="pdf"
-      />
-    </>
-  );
+async function saveToBackend(
+  editedFileAsBase64: string,
+  meta: DocumentViewerSaveMeta,
+) {
+  await fetch("/api/documents/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fileBase64: editedFileAsBase64,
+      fileName: meta.fileName,
+      fileType: meta.fileType,
+      exportedAsPdf: meta.exportedAsPdf ?? false,
+      signaturePlacements: meta.signaturePlacements ?? [],
+      annotations: meta.annotations ?? [],
+    }),
+  });
 }
 ```
 
-## Signing Workflow (decoupled)
+## Signing And Annotation Model
 
-- If `allowSigning={true}`, the toolbar shows **Sign Document**.
-- Clicking it calls `onSignRequest()` (parent handles biometric/e-signature/KYC/etc.).
-- The returned `Signature` is immediately displayed:
-  - `view/edit`: signatures appear in the right signature panel and can be **placed** onto the page by clicking **Place signature**.
-  - `create`: signatures are appended to the end of the document (no right panel).
+The package treats placed signatures and annotations as first-class review data.
 
-## Progressive loading and caching
+### Signatures
 
-- `fileUrl` loading uses streaming where available (`fetch` + `ReadableStream`).
-- For PDFs, `pdfjs` is configured with `rangeChunkSize` so rendering can start before the full file downloads.
-- In `fileUrl` mode, the package caches the ArrayBuffer in-memory during the session to avoid re-fetching when switching layouts/modes.
+A `Signature` is the reusable signature asset itself:
 
-## Security
+- `id?`
+- `signatureImageUrl`
+- `signedBy?`
+- `dateSigned`
 
-- Markdown/HTML content is sanitized via DOMPurify before rendering.
+A placed signature is represented as a `SignaturePlacement`:
 
-## Props
+- `id`
+- `signatureId?`
+- `signature`
+- `surfaceKind`
+- `surfaceKey`
+- `page?`
+- `slide?`
+- `sheetName?`
+- `x`
+- `y`
+- `width`
+- `height`
 
-See `src/types.ts` for full types.
+### Annotations
+
+Annotations are separate from signatures and can exist:
+
+- on their own
+- linked to a placed signature
+
+An `AnnotationPlacement` includes:
+
+- `id`
+- `surfaceKind`
+- `surfaceKey`
+- `page?`
+- `slide?`
+- `sheetName?`
+- `x`
+- `y`
+- `width`
+- `height`
+- `text`
+- `linkedSignaturePlacementId?`
+- `linkedSignatureId?`
+
+All placement geometry is stored in normalized coordinates, so overlays can be restored across zoom and layout changes.
+
+## What Gets Returned On Save
+
+The main save contract is:
+
+```ts
+onSave?: (editedFileAsBase64: string, meta: DocumentViewerSaveMeta) => void;
+```
+
+`editedFileAsBase64`
+
+- the saved/exported file contents
+- ready to send to your backend or upload to object storage
+
+`meta`
+
+- `fileName`
+- `fileType`
+- `exportedAsPdf?`
+- `signaturePlacements?`
+- `annotations?`
+
+The important part for consumers is that the package returns both:
+
+- the file
+- the structured overlay metadata
+
+That means the consumer can store:
+
+- the uploaded file URL returned by their backend or bucket
+- the placements and annotations JSON for reopening later
+
+## Recommended Backend Wiring
+
+Most products wire the package like this:
+
+1. User reviews document in `DocumentViewer`.
+2. User clicks `Save` or `Export as PDF`.
+3. The package calls `onSave(base64, meta)`.
+4. Your app sends that `base64` to the backend.
+5. Your backend uploads the file to storage.
+6. Your backend returns a stored file URL.
+7. Your app saves that URL together with `signaturePlacements` and `annotations`.
+
+### Example Payload Sent To Backend
+
+```json
+{
+  "fileBase64": "<base64 returned by onSave>",
+  "fileName": "contract.docx",
+  "fileType": "docx",
+  "exportedAsPdf": false,
+  "signaturePlacements": [],
+  "annotations": []
+}
+```
+
+### Example Record Stored In Your Database
+
+```json
+{
+  "documentId": "doc_123",
+  "fileUrl": "https://bucket.example.com/contracts/doc_123.docx",
+  "fileName": "contract.docx",
+  "fileType": "docx",
+  "exportedAsPdf": false,
+  "signaturePlacements": [],
+  "annotations": []
+}
+```
+
+## Reopening A Saved Document
+
+When you want to show the document again in your app, pass the saved file plus the saved overlay metadata back into the viewer:
+
+```tsx
+<DocumentViewer
+  mode="view"
+  fileUrl={record.fileUrl}
+  fileName={record.fileName}
+  fileType={record.fileType}
+  signaturePlacements={record.signaturePlacements}
+  annotations={record.annotations}
+/>
+```
+
+This is the key integration idea:
+
+- the file gives the viewer the document source
+- `signaturePlacements` and `annotations` restore the review layer
+
+## Live Review State Callbacks
+
+If you want autosave before the user clicks Save, you can listen to:
+
+- `onSignaturePlacementsChange`
+- `onAnnotationsChange`
+
+These callbacks are useful for draft persistence, collaborative review state, or saving progress during long sessions.
+
+## Save Behavior By Format
+
+The package can return different output formats depending on the source file type and the user action.
+
+### Save
+
+- `pdf` saves as `pdf`
+- `pptx` and `ppt` save as native `pptx`
+- `xlsx`, `xls`, and `csv` save as native `xlsx`
+- `docx`, `doc`, `rtf`, `txt`, and `md` save as a visual `docx`
+- JPEG sources save as `jpg`
+- other image sources save as `png`
+
+### Export as PDF
+
+- returns a PDF output
+- `meta.exportedAsPdf` is `true`
+- `meta.fileType` will be `pdf`
+
+Consumers should rely on the returned `meta.fileType`, not the original input file type.
+
+## Important Persistence Note
+
+There are two different ways consumers may reopen a document:
+
+### 1. Reopen for continued review
+
+Use:
+
+- the saved source document URL or `base64`
+- `signaturePlacements`
+- `annotations`
+
+This is the normal review-session restore pattern.
+
+### 2. Reopen the final baked file
+
+Use:
+
+- the final file returned by `onSave`
+
+If your saved file already visually includes signatures and annotations, and you also pass the same `signaturePlacements` and `annotations` back into the viewer, the user may see them twice.
+
+For that reason, many apps keep:
+
+- a source/review version
+- a final exported artifact
+
+## Core Props
+
+Commonly used props:
+
+- `mode`
+- `fileUrl`
+- `base64`
+- `blob`
+- `fileName`
+- `fileType`
+- `allowSigning`
+- `disableSigning`
+- `allowAnnotations`
+- `disableAnnotations`
+- `defaultLayout`
+- `defaultShowThumbnails`
+- `signatures`
+- `signaturePlacements`
+- `annotations`
+- `onSignRequest`
+- `onSignaturePlacementsChange`
+- `onAnnotationsChange`
+- `onSave`
+- `theme`
+- `locale`
+
+The full exported types are available from the package:
+
+```ts
+import type {
+  AnnotationPlacement,
+  DocumentViewerProps,
+  DocumentViewerSaveMeta,
+  Signature,
+  SignaturePlacement,
+} from "@zerohive/hive-viewer";
+```
+
+## Locale
+
+You can override UI text through the `locale` prop.
+
+Example:
+
+```tsx
+<DocumentViewer
+  locale={{
+    "toolbar.sign": "Sign Document",
+    "toolbar.annotate": "Add Note",
+    "toolbar.save": "Save",
+    "toolbar.exportPdf": "Export as PDF",
+  }}
+/>
+```
+
+## Theme
+
+The built-in theme prop supports:
+
+- `light`
+- `dark`
+
+```tsx
+<DocumentViewer theme="dark" />
+```
+
+## Browser And Hosting Notes
+
+- `fileUrl` sources must be reachable by the browser.
+- If the source is stored in a bucket, CORS must allow your frontend to fetch it.
+- For private documents, many apps use signed URLs from their backend.
+
+## Current Rendering Notes
+
+- PDF uses a page-based renderer.
+- DOCX uses a browser-side page renderer in view mode and is best-effort, not a full Microsoft Word engine.
+- Slides and spreadsheets are rendered with package-managed viewers and export pipelines.
+- Rich-text save/export is visual rather than semantic word-processing output.
+- Legacy office formats such as `doc`, `xls`, and `ppt` are accepted, but `docx`, `xlsx`, and `pptx` are recommended for better fidelity.
+
+## Exports
+
+The package exports:
+
+```ts
+import { DocumentViewer } from "@zerohive/hive-viewer";
+```
+
+And these core types:
+
+```ts
+import type {
+  AnnotationPlacement,
+  AnnotationPlacementDraft,
+  AnnotationPatch,
+  DocumentMode,
+  DocumentViewerProps,
+  DocumentViewerSaveMeta,
+  PageLayout,
+  PlacementGeometryPatch,
+  Signature,
+  SignaturePlacement,
+  SignaturePlacementDraft,
+  SignatureSurfaceKind,
+  SupportedFileType,
+} from "@zerohive/hive-viewer";
+```
+
+## Summary
+
+The package gives consumers everything they need to wire document review into their own backend:
+
+- document rendering
+- signature placement
+- annotations
+- save/export as `base64`
+- structured placement metadata for persistence
+
+The usual storage model is:
+
+- upload returned `base64`
+- store the resulting file URL
+- store `signaturePlacements`
+- store `annotations`
+
+Then pass that data back into `DocumentViewer` whenever the document needs to be opened again.
