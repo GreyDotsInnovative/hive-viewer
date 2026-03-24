@@ -29,7 +29,7 @@ import {
   exportSignedSpreadsheetFile,
 } from "../utils/export";
 import { defaultLocale } from "../utils/locale";
-import { resolveSource } from "../utils/fileSource";
+import { guessFileType, resolveSource } from "../utils/fileSource";
 import { SignaturePanel } from "./SignaturePanel";
 import { ThumbnailsSidebar } from "./ThumbnailsSidebar";
 import { Toolbar } from "./Toolbar";
@@ -86,6 +86,91 @@ function createLinkedAnnotationDraft(
     linkedSignaturePlacementId: placement.id,
     linkedSignatureId: placement.signatureId,
   };
+}
+
+interface FileModeCapabilities {
+  canEdit: boolean;
+  canCreate: boolean;
+}
+
+function getFileModeCapabilities(fileType: SupportedFileType): FileModeCapabilities {
+  switch (fileType) {
+    case "docx":
+    case "doc":
+    case "rtf":
+    case "txt":
+    case "md":
+    case "xlsx":
+    case "xls":
+    case "csv":
+      return { canEdit: true, canCreate: true };
+    default:
+      return { canEdit: false, canCreate: false };
+  }
+}
+
+function getReadableFileTypeLabel(fileType: SupportedFileType) {
+  switch (fileType) {
+    case "pdf":
+      return "PDF";
+    case "docx":
+      return "DOCX";
+    case "doc":
+      return "DOC";
+    case "rtf":
+      return "RTF";
+    case "txt":
+      return "TXT";
+    case "md":
+      return "Markdown";
+    case "xlsx":
+      return "XLSX";
+    case "xls":
+      return "XLS";
+    case "csv":
+      return "CSV";
+    case "pptx":
+      return "PPTX";
+    case "ppt":
+      return "PPT";
+    case "jpg":
+    case "jpeg":
+      return "JPEG";
+    case "png":
+      return "PNG";
+    case "gif":
+      return "GIF";
+    case "bmp":
+      return "BMP";
+    case "svg":
+      return "SVG";
+    case "xml":
+      return "XML";
+    default:
+      return String(fileType).toUpperCase();
+  }
+}
+
+function getReadableModeLabel(mode: Extract<DocumentMode, "edit" | "create">) {
+  return mode === "edit" ? "Edit" : "Create";
+}
+
+function getFileNameHint(fileUrl?: string, fileName?: string) {
+  if (fileName) {
+    return fileName;
+  }
+
+  if (!fileUrl) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(fileUrl);
+    const hintedName = decodeURIComponent(url.pathname.split("/").pop() || "");
+    return hintedName || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function DocumentViewer(props: DocumentViewerProps) {
@@ -148,6 +233,27 @@ export function DocumentViewer(props: DocumentViewerProps) {
 
   const placements = props.signaturePlacements ?? internalPlacements;
   const annotations = props.annotations ?? internalAnnotations;
+  const sourceNameHint = getFileNameHint(props.fileUrl, props.fileName);
+  const requestedFileType = guessFileType(
+    sourceNameHint,
+    props.fileType,
+    props.blob?.type,
+  );
+  const fileModeCapabilities = getFileModeCapabilities(requestedFileType);
+  const isRequestedEditUnsupported =
+    mode === "edit" && !fileModeCapabilities.canEdit;
+  const isRequestedCreateUnsupported =
+    mode === "create" && !fileModeCapabilities.canCreate;
+  const effectiveMode: DocumentMode =
+    isRequestedEditUnsupported || isRequestedCreateUnsupported ? "view" : mode;
+  const hasRenderableSource = Boolean(resolved?.arrayBuffer || resolved?.url);
+  const showCreateUnsupportedNotice =
+    mode === "create" && isRequestedCreateUnsupported;
+  const showModeFallbackNotice =
+    mode === "edit" && isRequestedEditUnsupported;
+  const hasIncomingSource = Boolean(props.fileUrl || props.base64 || props.blob);
+  const createSupportedFormats =
+    "DOCX, DOC, RTF, TXT, Markdown, XLSX, XLS, and CSV";
 
   const signingEnabled =
     !props.disableSigning &&
@@ -213,10 +319,15 @@ export function DocumentViewer(props: DocumentViewerProps) {
       setResolved(null);
 
       try {
-        if (mode === "create") {
+        if (mode === "create" && !isRequestedCreateUnsupported) {
           setResolved({
-            fileType: (props.fileType ?? "docx") as SupportedFileType,
-            fileName: props.fileName ?? "Untitled",
+            fileType: requestedFileType,
+            fileName: props.fileName ?? `Untitled.${requestedFileType}`,
+          });
+        } else if (mode === "create" && isRequestedCreateUnsupported && !hasIncomingSource) {
+          setResolved({
+            fileType: requestedFileType,
+            fileName: props.fileName ?? `Untitled.${requestedFileType}`,
           });
         } else {
           const res = await resolveSource({
@@ -250,12 +361,15 @@ export function DocumentViewer(props: DocumentViewerProps) {
       cleanupSource?.();
     };
   }, [
+    hasIncomingSource,
+    isRequestedCreateUnsupported,
     mode,
     props.base64,
     props.blob,
     props.fileName,
     props.fileType,
     props.fileUrl,
+    requestedFileType,
   ]);
 
   useEffect(() => {
@@ -543,13 +657,17 @@ export function DocumentViewer(props: DocumentViewerProps) {
       return false;
     }
 
+    if (showCreateUnsupportedNotice) {
+      return false;
+    }
+
     switch (resolved.fileType) {
       case "docx":
       case "doc":
       case "rtf":
       case "txt":
       case "md":
-        return mode === "view"
+        return effectiveMode === "view"
           ? Boolean(
               (richTextExportState?.pages?.length ?? 0) > 0 ||
                 richTextExportState?.container,
@@ -566,10 +684,11 @@ export function DocumentViewer(props: DocumentViewerProps) {
         return true;
     }
   }, [
-    mode,
+    effectiveMode,
     pptxExportState,
     resolved,
     richTextExportState,
+    showCreateUnsupportedNotice,
     spreadsheetExportState,
   ]);
 
@@ -747,6 +866,46 @@ export function DocumentViewer(props: DocumentViewerProps) {
       );
     }
 
+    const renderCapabilityNotice = (
+      title: string,
+      description: string,
+      variant: "info" | "warning" = "info",
+    ) => (
+      <div className={`hv-info-banner${variant === "warning" ? " warning" : ""}`}>
+        <strong>{title}</strong>
+        <p>{description}</p>
+      </div>
+    );
+
+    const shouldShowModeAdjustedNotice =
+      showModeFallbackNotice || (showCreateUnsupportedNotice && hasRenderableSource);
+    const modeAdjustedNotice = shouldShowModeAdjustedNotice
+      ? renderCapabilityNotice(
+          locale["documents.modeFallbackTitle"],
+          locale["documents.modeFallbackDescription"]
+            .replace(
+              "{mode}",
+              getReadableModeLabel(showModeFallbackNotice ? "edit" : "create"),
+            )
+            .replace("{fileType}", getReadableFileTypeLabel(resolved.fileType)),
+        )
+      : null;
+
+    if (showCreateUnsupportedNotice && !hasRenderableSource) {
+      return (
+        <div className="hv-page-container" style={{ padding: "32px" }}>
+          {renderCapabilityNotice(
+            locale["documents.createUnsupportedTitle"],
+            locale["documents.createUnsupportedDescription"].replace(
+              "{formats}",
+              createSupportedFormats,
+            ),
+            "warning",
+          )}
+        </div>
+      );
+    }
+
     const commonProps = {
       arrayBuffer: resolved.arrayBuffer,
       fileName: resolved.fileName,
@@ -763,11 +922,14 @@ export function DocumentViewer(props: DocumentViewerProps) {
     switch (resolved.fileType) {
       case "pdf":
         return (
-          <PdfRenderer
-            url={resolved.url}
-            workerSrc={props.pdfWorkerSrc}
-            {...commonProps}
-          />
+          <>
+            {modeAdjustedNotice}
+            <PdfRenderer
+              url={resolved.url}
+              workerSrc={props.pdfWorkerSrc}
+              {...commonProps}
+            />
+          </>
         );
       case "docx":
       case "doc":
@@ -775,29 +937,38 @@ export function DocumentViewer(props: DocumentViewerProps) {
       case "txt":
       case "md":
         return (
-          <RichTextEditor
-            mode={mode}
-            onExportStateChange={setRichTextExportState}
-            {...commonProps}
-          />
+          <>
+            {modeAdjustedNotice}
+            <RichTextEditor
+              mode={effectiveMode}
+              onExportStateChange={setRichTextExportState}
+              {...commonProps}
+            />
+          </>
         );
       case "xlsx":
       case "csv":
       case "xls":
         return (
-          <SpreadsheetEditor
-            mode={mode}
-            onExportStateChange={setSpreadsheetExportState}
-            {...commonProps}
-          />
+          <>
+            {modeAdjustedNotice}
+            <SpreadsheetEditor
+              mode={effectiveMode}
+              onExportStateChange={setSpreadsheetExportState}
+              {...commonProps}
+            />
+          </>
         );
       case "pptx":
       case "ppt":
         return (
-          <PptxRenderer
-            onExportStateChange={setPptxExportState}
-            {...commonProps}
-          />
+          <>
+            {modeAdjustedNotice}
+            <PptxRenderer
+              onExportStateChange={setPptxExportState}
+              {...commonProps}
+            />
+          </>
         );
       case "jpg":
       case "jpeg":
@@ -805,7 +976,12 @@ export function DocumentViewer(props: DocumentViewerProps) {
       case "gif":
       case "bmp":
       case "svg":
-        return <ImageRenderer {...commonProps} fileType={resolved.fileType} />;
+        return (
+          <>
+            {modeAdjustedNotice}
+            <ImageRenderer {...commonProps} fileType={resolved.fileType} />
+          </>
+        );
       default:
         return (
           <div className="hv-error-banner">

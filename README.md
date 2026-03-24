@@ -116,6 +116,56 @@ Accepted legacy formats with more limited fidelity:
 - `create`
   For building a new document session from the chosen `fileType`.
 
+## Mode Support By Format
+
+The package now applies mode support honestly by file type.
+
+### Full Authoring Support
+
+These formats support `view`, `edit`, and `create`:
+
+- `docx`
+- `doc`
+- `rtf`
+- `txt`
+- `md`
+- `xlsx`
+- `xls`
+- `csv`
+
+### Review-Only Formats
+
+These formats are currently best used for `view`, signing, annotations, save, and export:
+
+- `pdf`
+- `pptx`
+- `ppt`
+- `png`
+- `jpg`
+- `jpeg`
+- `gif`
+- `bmp`
+- `svg`
+- `xml`
+
+If a consumer requests `edit` or `create` for a review-only format, the viewer now falls back cleanly:
+
+- unsupported `edit` becomes `view` with a clear notice
+- unsupported `create` with a source document becomes `view` with a clear notice
+- unsupported `create` without a source shows a capability message instead of a broken blank editor
+
+## Rich Text Authoring
+
+For text-style documents (`docx`, `doc`, `rtf`, `txt`, `md`), `edit` and `create` now provide a fuller authoring surface:
+
+- a style picker for paragraph, headings, and quote blocks
+- formatting controls for bold, italic, underline, bullets, numbering, and alignment
+- insert actions for links, dividers, and simple tables
+- undo/redo and clear-formatting actions
+- create-mode starter templates such as blank document, letter, memo, meeting notes, agreement, and proposal
+
+This makes the package much better for lightweight in-app document drafting, review preparation, and internal document generation.
+
 ## Basic Example
 
 ```tsx

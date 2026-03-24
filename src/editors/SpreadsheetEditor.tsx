@@ -256,6 +256,76 @@ function createEmptyGrid(rowCount: number, colCount: number) {
   );
 }
 
+function createBlankSheetModel(name: string): SheetModel {
+  const rowCount = 40;
+  const colCount = 12;
+
+  return {
+    name,
+    data: createEmptyGrid(rowCount, colCount),
+    cells: {},
+    merges: [],
+    colWidths: Array.from({ length: colCount }, () => 96),
+    rowHeights: Array.from({ length: rowCount }, () => 32),
+    rowCount,
+    colCount,
+    renderedRowCount: rowCount,
+    renderedColCount: colCount,
+  };
+}
+
+function getNextSheetName(sheets: SheetModel[]) {
+  let index = sheets.length + 1;
+  let candidate = `Sheet${index}`;
+
+  while (sheets.some((sheet) => sheet.name === candidate)) {
+    index += 1;
+    candidate = `Sheet${index}`;
+  }
+
+  return candidate;
+}
+
+function appendBlankRow(sheet: SheetModel): SheetModel {
+  const nextRowCount = sheet.rowCount + 1;
+  const nextRenderedRowCount = Math.min(nextRowCount, MAX_RENDER_ROWS);
+  const nextData =
+    sheet.renderedRowCount < MAX_RENDER_ROWS
+      ? [
+          ...sheet.data.map((row) => [...row]),
+          Array.from({ length: sheet.renderedColCount }, () => ""),
+        ]
+      : sheet.data.map((row) => [...row]);
+
+  return {
+    ...sheet,
+    data: nextData,
+    rowCount: nextRowCount,
+    renderedRowCount: nextRenderedRowCount,
+    rowHeights: [...sheet.rowHeights, 32],
+  };
+}
+
+function appendBlankColumn(sheet: SheetModel): SheetModel {
+  const nextColCount = sheet.colCount + 1;
+  const nextRenderedColCount = Math.min(nextColCount, MAX_RENDER_COLS);
+  const nextData = sheet.data.map((row) => {
+    const nextRow = [...row];
+    if (sheet.renderedColCount < MAX_RENDER_COLS) {
+      nextRow.push("");
+    }
+    return nextRow;
+  });
+
+  return {
+    ...sheet,
+    data: nextData,
+    colCount: nextColCount,
+    renderedColCount: nextRenderedColCount,
+    colWidths: [...sheet.colWidths, 96],
+  };
+}
+
 function buildEditedCellModel(
   address: string,
   input: string,
@@ -726,11 +796,13 @@ export function SpreadsheetEditor(props: SpreadsheetEditorProps) {
 
   useEffect(() => {
     if (!props.arrayBuffer) {
-      setSheets([]);
+      const nextSheets =
+        props.mode === "create" ? [createBlankSheetModel("Sheet1")] : [];
+      setSheets(nextSheets);
       setHasEdits(false);
       setDirtyCellAddressesBySheet({});
-      props.onPageCount(1);
-      props.onThumbs([]);
+      props.onPageCount(Math.max(nextSheets.length, 1));
+      props.onThumbs(nextSheets.map(makeSheetThumbnail));
       return;
     }
 
@@ -776,6 +848,7 @@ export function SpreadsheetEditor(props: SpreadsheetEditorProps) {
     props.onCurrentPageChange,
     props.onPageCount,
     props.onThumbs,
+    props.mode,
   ]);
 
   useEffect(() => {
@@ -822,6 +895,42 @@ export function SpreadsheetEditor(props: SpreadsheetEditorProps) {
 
   const activeCellModel = activeSheet?.cells[makeCellKey(activeCell.row, activeCell.col)];
   const activeCellValue = getCellInputValue(activeCellModel);
+
+  const addSheet = () => {
+    const nextSheets = [...sheets, createBlankSheetModel(getNextSheetName(sheets))];
+    setHasEdits(true);
+    setSheets(nextSheets);
+    props.onPageCount(nextSheets.length);
+    props.onThumbs(nextSheets.map(makeSheetThumbnail));
+    props.onCurrentPageChange(nextSheets.length);
+    setActiveCell({ row: 0, col: 0 });
+  };
+
+  const addRow = () => {
+    if (!activeSheet) {
+      return;
+    }
+
+    setHasEdits(true);
+    setSheets((prev) =>
+      prev.map((sheet, index) =>
+        index === activeSheetIndex ? appendBlankRow(sheet) : sheet,
+      ),
+    );
+  };
+
+  const addColumn = () => {
+    if (!activeSheet) {
+      return;
+    }
+
+    setHasEdits(true);
+    setSheets((prev) =>
+      prev.map((sheet, index) =>
+        index === activeSheetIndex ? appendBlankColumn(sheet) : sheet,
+      ),
+    );
+  };
 
   const updateCell = (row: number, col: number, value: string) => {
     setHasEdits(true);
@@ -885,19 +994,47 @@ export function SpreadsheetEditor(props: SpreadsheetEditorProps) {
     <div className="hv-view-single">
       <div className="hv-page-container hv-sheet-container">
         <div className="hv-sheet-tabs">
-          {sheets.map((sheet, index) => (
-            <button
-              key={sheet.name}
-              type="button"
-              className={`hv-sheet-tab ${index === activeSheetIndex ? "active" : ""}`}
-              onClick={() => {
-                props.onCurrentPageChange(index + 1);
-                setActiveCell({ row: 0, col: 0 });
-              }}
-            >
-              {sheet.name}
-            </button>
-          ))}
+          <div className="hv-sheet-tab-list">
+            {sheets.map((sheet, index) => (
+              <button
+                key={sheet.name}
+                type="button"
+                className={`hv-sheet-tab ${index === activeSheetIndex ? "active" : ""}`}
+                onClick={() => {
+                  props.onCurrentPageChange(index + 1);
+                  setActiveCell({ row: 0, col: 0 });
+                }}
+              >
+                {sheet.name}
+              </button>
+            ))}
+          </div>
+
+          {!readonly && (
+            <div className="hv-sheet-actions">
+              <button
+                type="button"
+                className="hv-btn"
+                onClick={addSheet}
+              >
+                {props.locale["documents.sheetAddSheet"]}
+              </button>
+              <button
+                type="button"
+                className="hv-btn"
+                onClick={addRow}
+              >
+                {props.locale["documents.sheetAddRow"]}
+              </button>
+              <button
+                type="button"
+                className="hv-btn"
+                onClick={addColumn}
+              >
+                {props.locale["documents.sheetAddColumn"]}
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="hv-sheet-formula-bar">
