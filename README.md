@@ -166,6 +166,56 @@ For text-style documents (`docx`, `doc`, `rtf`, `txt`, `md`), `edit` and `create
 
 This makes the package much better for lightweight in-app document drafting, review preparation, and internal document generation.
 
+Current rich-text authoring also includes:
+
+- image insertion and upload
+- image sizing, crop presets, alignment, zoom, and focal-point editing
+- table row and column controls when the cursor is inside a table
+- a hideable create-mode template strip
+- starter templates for blank, letter, meeting notes, agreement, and proposal
+
+## Finalize-To-PDF Workflow
+
+For products that only need a final signed document for viewing, sharing, or archiving, the package can finalize signed sessions to PDF.
+
+- when `finalizeSignedDocumentsAsPdf` is enabled, signed or annotated save actions default to PDF
+- `onSave` returns the finalized PDF as `base64`
+- the save metadata still includes signature placements, annotations, and signature summaries
+
+This is the recommended path when your backend stores a final artifact in object storage and returns a file URL for later viewing.
+
+## Letterhead Support
+
+The package supports structured finalized-PDF letterheads through `letterheadTemplate`.
+
+You can pass it as a prop without saving it anywhere, or generate it from user/company settings in your host app.
+
+- header logo, brand name, subtitle, badge, colors, and divider styling
+- footer title, lines, alignment, and divider styling
+- same-origin image URLs and SVG logos are supported best
+
+This is separate from `headerComponent` and `footerComponent`: the React components can be used for viewer-side preview, while `letterheadTemplate` drives the finalized PDF letterhead layout.
+
+## Host-Provided Signatures
+
+If your product already stores user signatures, use `onSignRequest`.
+
+Typical flow:
+
+1. User clicks `Sign Document`.
+2. Your app opens a PIN or approval dialog.
+3. Your backend verifies the PIN and returns the signature image plus signer details.
+4. `onSignRequest` returns that signature object to the package.
+5. The package places it on the document and includes it in save metadata.
+
+The package supports:
+
+- URL or base64 signature images
+- optional `signedBy`
+- optional `jobTitle`
+- date normalization to `dd-mm-yyyy`
+- per-placement signature colors: `black`, `blue`, `red`, `green`
+
 ## Basic Example
 
 ```tsx
@@ -249,13 +299,20 @@ A `Signature` is the reusable signature asset itself:
 - `id?`
 - `signatureImageUrl`
 - `signedBy?`
+- `jobTitle?`
 - `dateSigned`
+
+Notes:
+
+- package-managed visible dates are normalized to `dd-mm-yyyy`
+- the signature asset stays reusable, while color is applied at placement level
 
 A placed signature is represented as a `SignaturePlacement`:
 
 - `id`
 - `signatureId?`
 - `signature`
+- `signatureColor?`
 - `surfaceKind`
 - `surfaceKey`
 - `page?`
@@ -311,6 +368,8 @@ onSave?: (editedFileAsBase64: string, meta: DocumentViewerSaveMeta) => void;
 - `exportedAsPdf?`
 - `signaturePlacements?`
 - `annotations?`
+- `signatures?`
+- `signatureList?`
 
 The important part for consumers is that the package returns both:
 
@@ -461,6 +520,8 @@ Commonly used props:
 - `onSignaturePlacementsChange`
 - `onAnnotationsChange`
 - `onSave`
+- `finalizeSignedDocumentsAsPdf`
+- `letterheadTemplate`
 - `theme`
 - `locale`
 
@@ -472,6 +533,7 @@ import type {
   DocumentViewerProps,
   DocumentViewerSaveMeta,
   Signature,
+  SignatureInkColor,
   SignaturePlacement,
 } from "@zerohive/hive-viewer";
 ```

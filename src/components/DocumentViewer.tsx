@@ -18,6 +18,7 @@ import type {
   DocumentMode,
   DocumentViewerProps,
   Signature,
+  SignatureInkColor,
   SignaturePlacement,
   SupportedFileType,
 } from "../types";
@@ -30,6 +31,11 @@ import {
 } from "../utils/export";
 import { defaultLocale } from "../utils/locale";
 import { guessFileType, resolveSource } from "../utils/fileSource";
+import {
+  normalizeSignature,
+  normalizeSignaturePlacement,
+  normalizeSignatureInkColor,
+} from "../utils/signature";
 import { SignaturePanel } from "./SignaturePanel";
 import { ThumbnailsSidebar } from "./ThumbnailsSidebar";
 import { Toolbar } from "./Toolbar";
@@ -40,52 +46,6 @@ function createPlacementId() {
 
 function createAnnotationId() {
   return `ann-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function getDefaultAnnotationSize(
-  surfaceKind: AnnotationPlacement["surfaceKind"],
-) {
-  switch (surfaceKind) {
-    case "sheet":
-      return { width: 0.2, height: 0.12 };
-    case "slide":
-      return { width: 0.22, height: 0.12 };
-    case "image":
-      return { width: 0.24, height: 0.12 };
-    default:
-      return { width: 0.26, height: 0.12 };
-  }
-}
-
-function createLinkedAnnotationDraft(
-  placement: SignaturePlacement,
-): AnnotationPlacementDraft {
-  const { width, height } = getDefaultAnnotationSize(placement.surfaceKind);
-  const preferredX = placement.x + placement.width + 0.02;
-  const fallbackX = placement.x - width - 0.02;
-
-  return {
-    surfaceKind: placement.surfaceKind,
-    surfaceKey: placement.surfaceKey,
-    page: placement.page,
-    slide: placement.slide,
-    sheetName: placement.sheetName,
-    x: clamp(
-      preferredX <= 1 - width ? preferredX : fallbackX,
-      0,
-      1 - width,
-    ),
-    y: clamp(placement.y, 0, 1 - height),
-    width,
-    height,
-    text: "",
-    linkedSignaturePlacementId: placement.id,
-    linkedSignatureId: placement.signatureId,
-  };
 }
 
 interface FileModeCapabilities {
@@ -190,10 +150,15 @@ export function DocumentViewer(props: DocumentViewerProps) {
   const [showHeaderFooterSlots, setShowHeaderFooterSlots] = useState(true);
   const [showSignatures, setShowSignatures] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const mainRef = useRef<HTMLElement>(null);
   const zoomStageRef = useRef<HTMLDivElement>(null);
+  const exportHeaderRef = useRef<HTMLDivElement>(null);
+  const exportFooterRef = useRef<HTMLDivElement>(null);
   const [selectedSignature, setSelectedSignature] = useState<Signature | null>(
     null,
   );
+  const [selectedSignatureColor, setSelectedSignatureColor] =
+    useState<SignatureInkColor>("black");
   const [isPlacingAnnotation, setIsPlacingAnnotation] = useState(false);
   const [activePlacementId, setActivePlacementId] = useState<string | null>(
     null,
@@ -230,9 +195,20 @@ export function DocumentViewer(props: DocumentViewerProps) {
     AnnotationPlacement[]
   >(props.annotations ?? []);
   const [zoomStageSize, setZoomStageSize] = useState({ width: 0, height: 0 });
+  const [mainContentWidth, setMainContentWidth] = useState(0);
 
-  const placements = props.signaturePlacements ?? internalPlacements;
+  const placements = useMemo(
+    () =>
+      (props.signaturePlacements ?? internalPlacements).map((placement) =>
+        normalizeSignaturePlacement(placement),
+      ),
+    [internalPlacements, props.signaturePlacements],
+  );
   const annotations = props.annotations ?? internalAnnotations;
+  const availableSignatures = useMemo(
+    () => (props.signatures ?? []).map((signature) => normalizeSignature(signature)),
+    [props.signatures],
+  );
   const sourceNameHint = getFileNameHint(props.fileUrl, props.fileName);
   const requestedFileType = guessFileType(
     sourceNameHint,
@@ -261,11 +237,55 @@ export function DocumentViewer(props: DocumentViewerProps) {
       Boolean(props.onSignRequest || (props.signatures?.length ?? 0) > 0));
   const annotationEnabled =
     !props.disableAnnotations && (props.allowAnnotations ?? true);
+  const hasLetterheadTemplate = Boolean(
+    props.letterheadTemplate?.header || props.letterheadTemplate?.footer,
+  );
   const hasHeaderFooterSlots = Boolean(
-    props.headerComponent || props.footerComponent,
+    props.headerComponent || props.footerComponent || hasLetterheadTemplate,
   );
   const headerFooterToggleEnabled = Boolean(
     props.enableHeaderFooterToggle && hasHeaderFooterSlots,
+  );
+  const hasReviewMarks = placements.length > 0 || annotations.length > 0;
+  const saveAsPdfByDefault =
+    (resolved?.fileType === "pdf") ||
+    ((props.finalizeSignedDocumentsAsPdf ?? true) && hasReviewMarks);
+  const isRichTextAuthoringMode = Boolean(
+    resolved &&
+      ["docx", "doc", "rtf", "txt", "md"].includes(resolved.fileType) &&
+      effectiveMode !== "view",
+  );
+  const finalizedSignatures = useMemo(() => {
+    const seen = new Set<string>();
+    return placements.flatMap((placement) => {
+      const signature = placement.signature;
+      const dedupeKey =
+        placement.signatureId ||
+        `${signature.signatureImageUrl}:${signature.signedBy || ""}:${signature.jobTitle || ""}:${signature.dateSigned}`;
+
+      if (seen.has(dedupeKey)) {
+        return [];
+      }
+
+      seen.add(dedupeKey);
+      return [signature];
+    });
+  }, [placements]);
+  const signatureList = useMemo(
+    () =>
+      placements.map((placement) => ({
+        placementId: placement.id,
+        signatureId: placement.signatureId,
+        signedBy: placement.signature.signedBy,
+        jobTitle: placement.signature.jobTitle,
+        dateSigned: placement.signature.dateSigned,
+        signatureColor: placement.signatureColor,
+        surfaceKind: placement.surfaceKind,
+        page: placement.page,
+        slide: placement.slide,
+        sheetName: placement.sheetName,
+      })),
+    [placements],
   );
 
   useEffect(() => {
@@ -376,6 +396,7 @@ export function DocumentViewer(props: DocumentViewerProps) {
     setZoom(1);
     setCurrentPage(1);
     setSelectedSignature(null);
+    setSelectedSignatureColor("black");
     setIsPlacingAnnotation(false);
     setActivePlacementId(null);
     setActiveAnnotationId(null);
@@ -449,6 +470,7 @@ export function DocumentViewer(props: DocumentViewerProps) {
   }, [
     currentPage,
     error,
+    isRichTextAuthoringMode,
     layout,
     loading,
     pageCount,
@@ -458,37 +480,95 @@ export function DocumentViewer(props: DocumentViewerProps) {
     showThumbnails,
   ]);
 
+  useEffect(() => {
+    const element = mainRef.current;
+    if (!element) {
+      return;
+    }
+
+    let frameId = 0;
+
+    const measure = () => {
+      frameId = 0;
+      const nextWidth = Math.max(element.clientWidth, element.offsetWidth, 1);
+      setMainContentWidth((prev) => (prev === nextWidth ? prev : nextWidth));
+    };
+
+    const scheduleMeasure = () => {
+      if (frameId) {
+        cancelAnimationFrame(frameId);
+      }
+      frameId = requestAnimationFrame(measure);
+    };
+
+    scheduleMeasure();
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => {
+        scheduleMeasure();
+      });
+      resizeObserver.observe(element);
+    }
+
+    window.addEventListener("resize", scheduleMeasure);
+
+    return () => {
+      if (frameId) {
+        cancelAnimationFrame(frameId);
+      }
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", scheduleMeasure);
+    };
+  }, []);
+
   const zoomShellStyle = useMemo<React.CSSProperties>(
-    () => ({
-      minWidth: "100%",
-      width:
-        zoomStageSize.width > 0 ? `${Math.round(zoomStageSize.width * zoom)}px` : "100%",
-      minHeight:
-        zoomStageSize.height > 0
-          ? `${Math.round(zoomStageSize.height * zoom)}px`
-          : undefined,
-    }),
-    [zoom, zoomStageSize.height, zoomStageSize.width],
+    () => {
+      const baseWidth =
+        isRichTextAuthoringMode && mainContentWidth > 0
+          ? mainContentWidth
+          : zoomStageSize.width;
+
+      return {
+        minWidth: "100%",
+        width: baseWidth > 0 ? `${Math.round(baseWidth * zoom)}px` : "100%",
+        minHeight:
+          zoomStageSize.height > 0
+            ? `${Math.round(zoomStageSize.height * zoom)}px`
+            : undefined,
+      };
+    },
+    [isRichTextAuthoringMode, mainContentWidth, zoom, zoomStageSize.height, zoomStageSize.width],
   );
 
   const zoomStageStyle = useMemo<React.CSSProperties>(
-    () => ({
-      transform: `scale(${zoom})`,
-      width: zoomStageSize.width > 0 ? `${zoomStageSize.width}px` : undefined,
-      transformOrigin: "top center",
-    }),
-    [zoom, zoomStageSize.width],
+    () => {
+      const baseWidth =
+        isRichTextAuthoringMode && mainContentWidth > 0
+          ? mainContentWidth
+          : zoomStageSize.width;
+
+      return {
+        transform: `scale(${zoom})`,
+        width: baseWidth > 0 ? `${baseWidth}px` : undefined,
+        transformOrigin: isRichTextAuthoringMode ? "top left" : "top center",
+      };
+    },
+    [isRichTextAuthoringMode, mainContentWidth, zoom, zoomStageSize.width],
   );
 
   const updatePlacements = (updater: SignaturePlacement[] | ((prev: SignaturePlacement[]) => SignaturePlacement[])) => {
     const next =
       typeof updater === "function" ? updater(placements) : updater;
+    const normalizedNext = next.map((placement) =>
+      normalizeSignaturePlacement(placement),
+    );
 
     if (!props.signaturePlacements) {
-      setInternalPlacements(next);
+      setInternalPlacements(normalizedNext);
     }
 
-    props.onSignaturePlacementsChange?.(next);
+    props.onSignaturePlacementsChange?.(normalizedNext);
   };
 
   const updateAnnotations = (
@@ -507,15 +587,17 @@ export function DocumentViewer(props: DocumentViewerProps) {
   };
 
   const handleSignatureSelect = (signature: Signature) => {
-    setSelectedSignature(signature);
+    setSelectedSignature(normalizeSignature(signature));
+    setSelectedSignatureColor("black");
     setIsPlacingAnnotation(false);
     setActivePlacementId(null);
     setActiveAnnotationId(null);
-    props.onSign?.(signature);
+    props.onSign?.(normalizeSignature(signature));
   };
 
   const handlePlaceSignature = (placement: {
     signature: Signature;
+    signatureColor?: SignatureInkColor;
     surfaceKey: string;
     surfaceKind: SignaturePlacement["surfaceKind"];
     page?: number;
@@ -526,10 +608,11 @@ export function DocumentViewer(props: DocumentViewerProps) {
     width: number;
     height: number;
   }) => {
-    const nextPlacement: SignaturePlacement = {
+    const nextPlacement: SignaturePlacement = normalizeSignaturePlacement({
       id: createPlacementId(),
       signatureId: placement.signature.id,
       signature: placement.signature,
+      signatureColor: placement.signatureColor ?? selectedSignatureColor,
       surfaceKey: placement.surfaceKey,
       surfaceKind: placement.surfaceKind,
       page: placement.page,
@@ -539,22 +622,13 @@ export function DocumentViewer(props: DocumentViewerProps) {
       y: placement.y,
       width: placement.width,
       height: placement.height,
-    };
+    });
 
     updatePlacements((prev) => [...prev, nextPlacement]);
     setSelectedSignature(null);
+    setSelectedSignatureColor("black");
     setActivePlacementId(null);
-
-    if (annotationEnabled) {
-      const nextAnnotation: AnnotationPlacement = {
-        id: createAnnotationId(),
-        ...createLinkedAnnotationDraft(nextPlacement),
-      };
-      updateAnnotations((prev) => [...prev, nextAnnotation]);
-      setActiveAnnotationId(nextAnnotation.id);
-    } else {
-      setActiveAnnotationId(null);
-    }
+    setActiveAnnotationId(null);
   };
 
   const handlePlaceAnnotation = (annotation: AnnotationPlacementDraft) => {
@@ -572,20 +646,27 @@ export function DocumentViewer(props: DocumentViewerProps) {
 
   const handleUpdatePlacement = (
     id: string,
-    patch: Partial<Pick<SignaturePlacement, "x" | "y" | "width" | "height">>,
+    patch: Partial<
+      Pick<SignaturePlacement, "x" | "y" | "width" | "height" | "signatureColor">
+    >,
   ) => {
     updatePlacements((prev) =>
       prev.map((placement) =>
-        placement.id === id ? { ...placement, ...patch } : placement,
+        placement.id === id
+          ? normalizeSignaturePlacement({
+              ...placement,
+              ...patch,
+              signatureColor: patch.signatureColor
+                ? normalizeSignatureInkColor(patch.signatureColor)
+                : placement.signatureColor,
+            })
+          : placement,
       ),
     );
   };
 
   const handleRemovePlacement = (id: string) => {
     updatePlacements((prev) => prev.filter((placement) => placement.id !== id));
-    updateAnnotations((prev) =>
-      prev.filter((annotation) => annotation.linkedSignaturePlacementId !== id),
-    );
     if (activePlacementId === id) {
       setActivePlacementId(null);
     }
@@ -626,6 +707,13 @@ export function DocumentViewer(props: DocumentViewerProps) {
     signatureAltLabel: locale["signatures.alt"],
     signatureAltByLabel: locale["signatures.altBy"],
     signatureNoteIndicatorLabel: locale["signatures.noteIndicator"],
+    signatureColorLabel: locale["signatures.color"],
+    signatureColorNames: {
+      black: locale["signatures.color.black"],
+      blue: locale["signatures.color.blue"],
+      red: locale["signatures.color.red"],
+      green: locale["signatures.color.green"],
+    },
     removeSignatureLabel: locale["signatures.remove"],
     annotationTitle: locale["annotations.title"],
     linkedAnnotationTitle: locale["annotations.linkedTitle"],
@@ -716,9 +804,11 @@ export function DocumentViewer(props: DocumentViewerProps) {
     props.onSave?.(base64, {
       fileName: meta.fileName,
       fileType: meta.fileType,
-      exportedAsPdf: meta.exportedAsPdf,
+      exportedAsPdf: meta.exportedAsPdf ?? meta.fileType === "pdf",
       annotations,
       signaturePlacements: placements,
+      signatures: finalizedSignatures,
+      signatureList,
     });
   };
 
@@ -737,6 +827,16 @@ export function DocumentViewer(props: DocumentViewerProps) {
     });
 
     try {
+      const saveAsPdf = exportAsPdf || saveAsPdfByDefault;
+      const pageDecorations =
+        showHeaderFooterSlots && hasHeaderFooterSlots
+          ? {
+              headerElement: exportHeaderRef.current,
+              footerElement: exportFooterRef.current,
+              letterheadTemplate: props.letterheadTemplate,
+            }
+          : undefined;
+
       switch (resolved.fileType) {
         case "pdf": {
           const exported = await exportSignedPdfDocument({
@@ -746,11 +846,12 @@ export function DocumentViewer(props: DocumentViewerProps) {
             placements,
             annotations,
             labels: exportLabels,
+            pageDecorations,
           });
           emitSave(exported.base64, {
             fileName: exported.fileName,
             fileType: exported.fileType,
-            exportedAsPdf: exportAsPdf,
+            exportedAsPdf: true,
           });
           break;
         }
@@ -765,13 +866,14 @@ export function DocumentViewer(props: DocumentViewerProps) {
             fileName: resolved.fileName,
             placements,
             annotations,
-            asPdf: exportAsPdf,
+            asPdf: saveAsPdf,
             labels: exportLabels,
+            pageDecorations,
           });
           emitSave(exported.base64, {
             fileName: exported.fileName,
             fileType: exported.fileType,
-            exportedAsPdf: exportAsPdf,
+            exportedAsPdf: saveAsPdf,
           });
           break;
         }
@@ -783,13 +885,14 @@ export function DocumentViewer(props: DocumentViewerProps) {
             fileName: resolved.fileName,
             placements,
             annotations,
-            asPdf: exportAsPdf,
+            asPdf: saveAsPdf,
             labels: exportLabels,
+            pageDecorations,
           });
           emitSave(exported.base64, {
             fileName: exported.fileName,
             fileType: exported.fileType,
-            exportedAsPdf: exportAsPdf,
+            exportedAsPdf: saveAsPdf,
           });
           break;
         }
@@ -800,13 +903,14 @@ export function DocumentViewer(props: DocumentViewerProps) {
             fileName: resolved.fileName,
             placements,
             annotations,
-            asPdf: exportAsPdf,
+            asPdf: saveAsPdf,
             labels: exportLabels,
+            pageDecorations,
           });
           emitSave(exported.base64, {
             fileName: exported.fileName,
             fileType: exported.fileType,
-            exportedAsPdf: exportAsPdf,
+            exportedAsPdf: saveAsPdf,
           });
           break;
         }
@@ -826,13 +930,14 @@ export function DocumentViewer(props: DocumentViewerProps) {
             fileName: resolved.fileName,
             placements,
             annotations,
-            asPdf: exportAsPdf,
+            asPdf: saveAsPdf,
             labels: exportLabels,
+            pageDecorations,
           });
           emitSave(exported.base64, {
             fileName: exported.fileName,
             fileType: exported.fileType,
-            exportedAsPdf: exportAsPdf,
+            exportedAsPdf: saveAsPdf,
           });
           break;
         }
@@ -1038,11 +1143,30 @@ export function DocumentViewer(props: DocumentViewerProps) {
         isSaving={isSaving}
         onSave={() => void handleSaveAction(false)}
         onExportPdf={() => void handleSaveAction(true)}
+        showExportPdfAction={!saveAsPdfByDefault}
+        saveLabel={saveAsPdfByDefault ? locale["toolbar.finalizePdf"] : locale["toolbar.save"]}
         locale={locale}
       />
 
-      {hasHeaderFooterSlots && showHeaderFooterSlots && props.headerComponent && (
-        <div className="hv-slot hv-slot-header">{props.headerComponent}</div>
+      {(props.headerComponent || props.footerComponent) && (
+        <div className="hv-export-slot-host" aria-hidden="true">
+          {props.headerComponent && (
+            <div
+              ref={exportHeaderRef}
+              className="hv-export-slot hv-export-slot-header"
+            >
+              {props.headerComponent}
+            </div>
+          )}
+          {props.footerComponent && (
+            <div
+              ref={exportFooterRef}
+              className="hv-export-slot hv-export-slot-footer"
+            >
+              {props.footerComponent}
+            </div>
+          )}
+        </div>
       )}
 
       <div className="hv-shell">
@@ -1054,7 +1178,10 @@ export function DocumentViewer(props: DocumentViewerProps) {
           locale={locale}
         />
 
-        <main className="hv-main">
+        <main
+          ref={mainRef}
+          className={`hv-main${isRichTextAuthoringMode ? " hv-main-richtext-authoring" : ""}`}
+        >
           <div className="hv-zoom-shell" style={zoomShellStyle}>
             <div ref={zoomStageRef} className="hv-zoom-stage" style={zoomStageStyle}>
               {renderContent()}
@@ -1068,17 +1195,19 @@ export function DocumentViewer(props: DocumentViewerProps) {
             onClose={() => setShowSignatures(false)}
             onSelectSignature={handleSignatureSelect}
             selectedSignature={selectedSignature}
-            onClearSelection={() => setSelectedSignature(null)}
-            externalSignatures={props.signatures}
+            selectedColor={selectedSignatureColor}
+            onSelectedColorChange={setSelectedSignatureColor}
+            onClearSelection={() => {
+              setSelectedSignature(null);
+              setSelectedSignatureColor("black");
+            }}
+            externalSignatures={availableSignatures}
             onSignRequest={props.onSignRequest}
             locale={locale}
           />
         )}
       </div>
 
-      {hasHeaderFooterSlots && showHeaderFooterSlots && props.footerComponent && (
-        <div className="hv-slot hv-slot-footer">{props.footerComponent}</div>
-      )}
     </div>
   );
 }

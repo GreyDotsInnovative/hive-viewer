@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import { SignatureOverlay } from "../components/SignatureOverlay";
 import type {
@@ -31,6 +31,42 @@ interface PptxRendererProps {
   onThumbs: (thumbs: Array<string | undefined>) => void;
   onExportStateChange?: (state: PptxExportState | null) => void;
   signatureOverlay: DocumentSurfaceOverlayState;
+}
+
+const SLIDE_RENDER_BASE_WIDTH = 1280;
+const SLIDE_RENDER_MAX_VIEW_WIDTH = 1080;
+const SLIDE_RENDER_MIN_VIEW_WIDTH = 300;
+const SLIDE_RENDER_GAP = 24;
+
+function alignToClassName(align?: string) {
+  if (align === "ctr") {
+    return "align-ctr";
+  }
+  if (align === "r") {
+    return "align-r";
+  }
+  return "align-l";
+}
+
+function isBrowserRenderableSlideImage(source: string) {
+  return !/^data:image\/(?:emf|wmf|tiff)/i.test(source);
+}
+
+function PresentationImage(props: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(!isBrowserRenderableSlideImage(props.src));
+
+  if (failed) {
+    return <div className="hv-slide-image-fallback">{props.alt}</div>;
+  }
+
+  return (
+    <img
+      src={props.src}
+      alt={props.alt}
+      className="hv-slide-image"
+      onError={() => setFailed(true)}
+    />
+  );
 }
 
 function parseColor(solidFill: Element | null): string | undefined {
@@ -88,6 +124,9 @@ function getMimeType(path: string) {
   if (lower.endsWith(".png")) {
     return "image/png";
   }
+  if (lower.endsWith(".bmp")) {
+    return "image/bmp";
+  }
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
     return "image/jpeg";
   }
@@ -97,8 +136,20 @@ function getMimeType(path: string) {
   if (lower.endsWith(".svg")) {
     return "image/svg+xml";
   }
+  if (lower.endsWith(".tif") || lower.endsWith(".tiff")) {
+    return "image/tiff";
+  }
   if (lower.endsWith(".webp")) {
     return "image/webp";
+  }
+  if (lower.endsWith(".avif")) {
+    return "image/avif";
+  }
+  if (lower.endsWith(".emf")) {
+    return "image/emf";
+  }
+  if (lower.endsWith(".wmf")) {
+    return "image/wmf";
   }
   return "application/octet-stream";
 }
@@ -165,8 +216,14 @@ function parseParagraphs(txBody: Element | null) {
   const paragraphs = Array.from(txBody.getElementsByTagNameNS(NS_A, "p"));
 
   return paragraphs
-    .map((paragraph) => {
+    .map((paragraph, paragraphIndex) => {
       const paragraphProps = paragraph.getElementsByTagNameNS(NS_A, "pPr")[0];
+      const bulletChar =
+        paragraphProps?.getElementsByTagNameNS(NS_A, "buChar")[0]?.getAttribute("char")
+        || undefined;
+      const autoNumbered = Boolean(
+        paragraphProps?.getElementsByTagNameNS(NS_A, "buAutoNum")[0],
+      );
       const runs = Array.from(paragraph.childNodes)
         .flatMap((node) => {
           if (!(node instanceof Element)) {
@@ -213,9 +270,8 @@ function parseParagraphs(txBody: Element | null) {
         runs,
         align: paragraphProps?.getAttribute("algn") || "l",
         level: Number(paragraphProps?.getAttribute("lvl") || "0"),
-        bullet:
-          Boolean(paragraphProps?.getElementsByTagNameNS(NS_A, "buChar")[0]) ||
-          Boolean(paragraphProps?.getElementsByTagNameNS(NS_A, "buAutoNum")[0]),
+        bullet: Boolean(bulletChar) || autoNumbered,
+        bulletText: bulletChar || (autoNumbered ? `${paragraphIndex + 1}.` : undefined),
       } satisfies PptxParagraphModel;
     })
     .filter((paragraph) => paragraph.runs.length > 0);
@@ -338,6 +394,8 @@ export function PptxRenderer(props: PptxRendererProps) {
   const [slides, setSlides] = useState<PptxSlideModel[]>([]);
   const [slideSize, setSlideSize] = useState({ width: 9144000, height: 5143500 });
   const [error, setError] = useState<string | null>(null);
+  const viewRef = useRef<HTMLDivElement>(null);
+  const [viewWidth, setViewWidth] = useState(SLIDE_RENDER_MAX_VIEW_WIDTH);
 
   useEffect(() => {
     if (!props.arrayBuffer) {
@@ -403,6 +461,23 @@ export function PptxRenderer(props: PptxRendererProps) {
     loadPptx();
   }, [props.arrayBuffer, props.onExportStateChange]);
 
+  useEffect(() => {
+    const host = viewRef.current;
+    if (!host || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      const nextWidth = entries[0]?.contentRect.width;
+      if (nextWidth) {
+        setViewWidth(nextWidth);
+      }
+    });
+
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+
   const pagesToShow = useMemo(() => {
     if (slides.length === 0) {
       return [];
@@ -422,12 +497,38 @@ export function PptxRenderer(props: PptxRendererProps) {
     return [validPage];
   }, [slides.length, props.currentPage, props.layout]);
 
+  const slideViewportWidth = useMemo(() => {
+    const boundedWidth = Math.max(
+      SLIDE_RENDER_MIN_VIEW_WIDTH,
+      Math.min(viewWidth, SLIDE_RENDER_MAX_VIEW_WIDTH * 2 + SLIDE_RENDER_GAP),
+    );
+
+    if (props.layout === "side-by-side" && pagesToShow.length > 1) {
+      return Math.max(
+        (boundedWidth - SLIDE_RENDER_GAP) / 2,
+        SLIDE_RENDER_MIN_VIEW_WIDTH,
+      );
+    }
+
+    return Math.max(
+      Math.min(boundedWidth, SLIDE_RENDER_MAX_VIEW_WIDTH),
+      SLIDE_RENDER_MIN_VIEW_WIDTH,
+    );
+  }, [pagesToShow.length, props.layout, viewWidth]);
+
+  const sceneCoordScale = SLIDE_RENDER_BASE_WIDTH / slideSize.width;
+  const sceneHeight = Math.max(1, Math.round(slideSize.height * sceneCoordScale));
+  const sceneScale = slideViewportWidth / SLIDE_RENDER_BASE_WIDTH;
+
   if (error) {
     return <div className="hv-error-banner">{error}</div>;
   }
 
   return (
-    <div className={props.layout === "side-by-side" ? "hv-view-double" : "hv-view-single"}>
+    <div
+      ref={viewRef}
+      className={props.layout === "side-by-side" ? "hv-view-double" : "hv-view-single"}
+    >
       {pagesToShow.map((pageNumber) => {
         const slide = slides[pageNumber - 1];
         if (!slide) {
@@ -438,21 +539,35 @@ export function PptxRenderer(props: PptxRendererProps) {
           <div
             key={pageNumber}
             className="hv-page-container hv-slide-surface"
-            style={{ aspectRatio: `${slideSize.width}/${slideSize.height}` }}
+            style={{
+              aspectRatio: `${slideSize.width}/${slideSize.height}`,
+              width:
+                props.layout === "side-by-side" && pagesToShow.length > 1
+                  ? `${slideViewportWidth}px`
+                  : undefined,
+            }}
           >
             <div
               className="hv-slide-stage"
               style={{ background: slide.background || "#ffffff" }}
             >
+              <div
+                className="hv-slide-scene"
+                style={{
+                  width: `${SLIDE_RENDER_BASE_WIDTH}px`,
+                  height: `${sceneHeight}px`,
+                  transform: `scale(${sceneScale})`,
+                }}
+              >
               {slide.elements.map((element) => (
                 <div
                   key={element.id}
                   className={`hv-slide-element ${element.kind}`}
                   style={{
-                    left: `${(element.x / slideSize.width) * 100}%`,
-                    top: `${(element.y / slideSize.height) * 100}%`,
-                    width: `${(element.width / slideSize.width) * 100}%`,
-                    height: `${(element.height / slideSize.height) * 100}%`,
+                    left: `${element.x * sceneCoordScale}px`,
+                    top: `${element.y * sceneCoordScale}px`,
+                    width: `${element.width * sceneCoordScale}px`,
+                    height: `${element.height * sceneCoordScale}px`,
                     transform: element.rotation
                       ? `rotate(${element.rotation}deg)`
                       : undefined,
@@ -461,27 +576,29 @@ export function PptxRenderer(props: PptxRendererProps) {
                   }}
                 >
                   {element.kind === "image" && element.imageSrc ? (
-                    <img
+                    <PresentationImage
                       src={element.imageSrc}
                       alt={element.alt || "Slide image"}
-                      className="hv-slide-image"
                     />
                   ) : (
                     <div className="hv-slide-textbox">
                       {element.paragraphs?.map((paragraph, paragraphIndex) => (
                         <p
                           key={`${element.id}-${paragraphIndex}`}
-                          className={`hv-slide-paragraph align-${paragraph.align || "l"}`}
-                          style={{ marginLeft: `${paragraph.level * 18}px` }}
+                          className={`hv-slide-paragraph ${alignToClassName(paragraph.align)}`}
+                          style={{ paddingInlineStart: `${paragraph.level * 18}px` }}
                         >
                           {paragraph.bullet && <span className="hv-slide-bullet">•</span>}
-                          <span>
+                          <span className="hv-slide-paragraph-copy">
                             {paragraph.runs.map((run, runIndex) => (
                               <span
                                 key={`${element.id}-${paragraphIndex}-${runIndex}`}
                                 style={{
                                   color: run.color,
-                                  fontSize: run.fontSize,
+                                  fontSize: Math.max(
+                                    12,
+                                    (run.fontSize || 18) * sceneCoordScale,
+                                  ),
                                   fontWeight: run.bold ? 700 : 400,
                                   fontStyle: run.italic ? "italic" : "normal",
                                   textDecoration: run.underline ? "underline" : "none",
@@ -517,6 +634,8 @@ export function PptxRenderer(props: PptxRendererProps) {
                 signatureNoteIndicatorLabel={
                   props.signatureOverlay.signatureNoteIndicatorLabel
                 }
+                signatureColorLabel={props.signatureOverlay.signatureColorLabel}
+                signatureColorNames={props.signatureOverlay.signatureColorNames}
                 removeSignatureLabel={props.signatureOverlay.removeSignatureLabel}
                 annotationTitle={props.signatureOverlay.annotationTitle}
                 linkedAnnotationTitle={props.signatureOverlay.linkedAnnotationTitle}
@@ -532,6 +651,7 @@ export function PptxRenderer(props: PptxRendererProps) {
                 onSelectPlacement={props.signatureOverlay.onSelectPlacement}
                 onSelectAnnotation={props.signatureOverlay.onSelectAnnotation}
               />
+              </div>
             </div>
           </div>
         );

@@ -2,9 +2,12 @@ export interface Signature {
   id?: string; // Added for unique keying
   signatureImageUrl: string; // The Base64 image of the signature
   signedBy?: string; // Optional name of the signer
-  dateSigned: string; // ISO 8601 Date
+  jobTitle?: string;
+  dateSigned: string; // Stored and emitted as dd-mm-yyyy
   comment?: string;
 }
+
+export type SignatureInkColor = "black" | "blue" | "red" | "green";
 
 export type SignatureSurfaceKind =
   | "document"
@@ -19,6 +22,7 @@ export interface SignaturePlacement {
   id: string;
   signatureId?: string;
   signature: Signature;
+  signatureColor?: SignatureInkColor;
   surfaceKind: SignatureSurfaceKind;
   surfaceKey: string;
   page?: number;
@@ -47,7 +51,7 @@ export interface AnnotationPlacement {
 }
 
 export type PlacementGeometryPatch = Partial<
-  Pick<SignaturePlacement, "x" | "y" | "width" | "height">
+  Pick<SignaturePlacement, "x" | "y" | "width" | "height" | "signatureColor">
 >;
 
 export type AnnotationPatch = Partial<
@@ -56,6 +60,7 @@ export type AnnotationPatch = Partial<
 
 export interface SignaturePlacementDraft {
   signature: Signature;
+  signatureColor?: SignatureInkColor;
   surfaceKind: SignatureSurfaceKind;
   surfaceKey: string;
   page?: number;
@@ -95,6 +100,8 @@ export interface DocumentSurfaceOverlayState {
   signatureAltLabel: string;
   signatureAltByLabel: string;
   signatureNoteIndicatorLabel: string;
+  signatureColorLabel: string;
+  signatureColorNames: Record<SignatureInkColor, string>;
   removeSignatureLabel: string;
   annotationTitle: string;
   linkedAnnotationTitle: string;
@@ -134,12 +141,46 @@ export type SupportedFileType =
   | "xls"
   | "xml";
 
+export interface LetterheadSectionTemplate {
+  logoUrl?: string;
+  brandName?: string;
+  title?: string;
+  subtitle?: string;
+  lines?: string[];
+  align?: "left" | "center" | "right";
+  layout?: "logo-left" | "stacked" | "text-only";
+  textColor?: string;
+  subtextColor?: string;
+  accentColor?: string;
+  dividerColor?: string;
+  backgroundColor?: string;
+  badgeText?: string;
+}
+
+export interface LetterheadTemplate {
+  header?: LetterheadSectionTemplate;
+  footer?: LetterheadSectionTemplate;
+}
+
 export interface DocumentViewerSaveMeta {
   fileName: string;
   fileType: SupportedFileType;
   exportedAsPdf?: boolean;
   annotations?: AnnotationPlacement[];
   signaturePlacements?: SignaturePlacement[];
+  signatures?: Signature[];
+  signatureList?: Array<{
+    placementId: string;
+    signatureId?: string;
+    signedBy?: string;
+    jobTitle?: string;
+    dateSigned: string;
+    signatureColor?: SignatureInkColor;
+    surfaceKind: SignatureSurfaceKind;
+    page?: number;
+    slide?: number;
+    sheetName?: string;
+  }>;
 }
 
 export interface DocumentViewerProps {
@@ -160,7 +201,9 @@ export interface DocumentViewerProps {
 
   headerComponent?: React.ReactNode;
   footerComponent?: React.ReactNode;
+  letterheadTemplate?: LetterheadTemplate;
   enableHeaderFooterToggle?: boolean;
+  finalizeSignedDocumentsAsPdf?: boolean;
 
   signatures?: Signature[];
   signaturePlacements?: SignaturePlacement[];

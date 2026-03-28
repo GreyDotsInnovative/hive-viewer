@@ -18,10 +18,17 @@ import type {
 } from "../internal/exportModels";
 import type {
   AnnotationPlacement,
+  LetterheadSectionTemplate,
+  LetterheadTemplate,
   SignaturePlacement,
   SupportedFileType,
 } from "../types";
 import { arrayBufferToBase64 } from "./fileSource";
+import {
+  normalizeSignatureDate,
+  normalizeSignatureInkColor,
+  SIGNATURE_INK_COLOR_VALUES,
+} from "./signature";
 
 const EMU_PER_INCH = 914400;
 const EMU_PER_PIXEL = 9525;
@@ -82,6 +89,21 @@ interface ExportLocaleLabels {
   annotationAltLabel: string;
   linkedAnnotationAltLabel: string;
 }
+
+export interface ExportPageDecorations {
+  headerElement?: HTMLElement | null;
+  footerElement?: HTMLElement | null;
+  letterheadTemplate?: LetterheadTemplate;
+}
+
+interface PreparedPageDecorations {
+  headerCanvas?: HTMLCanvasElement | null;
+  footerCanvas?: HTMLCanvasElement | null;
+}
+
+type DecorationKind = "header" | "footer";
+
+type CaptureStyleElement = HTMLElement | SVGElement;
 
 const defaultExportLocaleLabels: ExportLocaleLabels = {
   annotationTitle: "Annotation",
@@ -926,16 +948,39 @@ async function markWorkbookForFullCalculation(zip: JSZip) {
 }
 
 function ensureImageSource(source: string) {
+  const trimmedSource = source.trim();
   if (
-    source.startsWith("data:") ||
-    source.startsWith("blob:") ||
-    source.startsWith("http:")
-    || source.startsWith("https:")
+    trimmedSource.startsWith("data:") ||
+    trimmedSource.startsWith("blob:") ||
+    trimmedSource.startsWith("http:")
+    || trimmedSource.startsWith("https:")
   ) {
-    return source;
+    return trimmedSource;
   }
 
-  return `data:image/png;base64,${source}`;
+  if (trimmedSource.startsWith("//") && typeof window !== "undefined") {
+    return `${window.location.protocol}${trimmedSource}`;
+  }
+
+  if (
+    typeof window !== "undefined"
+    && (
+      trimmedSource.startsWith("/")
+      || trimmedSource.startsWith("./")
+      || trimmedSource.startsWith("../")
+    )
+  ) {
+    return new URL(trimmedSource, window.location.origin).toString();
+  }
+
+  if (
+    trimmedSource.startsWith("<svg")
+    || (trimmedSource.startsWith("<?xml") && trimmedSource.includes("<svg"))
+  ) {
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(trimmedSource)}`;
+  }
+
+  return `data:image/png;base64,${trimmedSource}`;
 }
 
 function createCanvas(width: number, height: number) {
@@ -983,6 +1028,14 @@ async function loadImage(source: string) {
   }
 
   return image;
+}
+
+async function tryLoadImage(source: string) {
+  try {
+    return await loadImage(source);
+  } catch {
+    return null;
+  }
 }
 
 function getOpaqueImageBounds(
@@ -1068,13 +1121,753 @@ async function blobToBase64(blob: Blob) {
   return arrayBufferToBase64(await blob.arrayBuffer());
 }
 
-function formatSignedDate(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
+const UNSUPPORTED_COLOR_FUNCTION_PATTERN = /\b(?:oklch|oklab|color)\(/i;
+let colorNormalizationElement: HTMLDivElement | null = null;
+
+function getColorNormalizationElement() {
+  if (
+    colorNormalizationElement &&
+    typeof document !== "undefined" &&
+    document.body.contains(colorNormalizationElement)
+  ) {
+    return colorNormalizationElement;
+  }
+
+  const element = document.createElement("div");
+  element.setAttribute("aria-hidden", "true");
+  element.style.position = "fixed";
+  element.style.left = "-200vw";
+  element.style.top = "0";
+  element.style.opacity = "0";
+  element.style.pointerEvents = "none";
+  document.body.appendChild(element);
+  colorNormalizationElement = element;
+  return colorNormalizationElement;
+}
+
+function normalizeColorToken(token: string) {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return token;
+  }
+
+  const element = getColorNormalizationElement();
+  const previous = element.style.color;
+
+  try {
+    element.style.color = "";
+    element.style.color = token;
+    const normalized = window.getComputedStyle(element).color;
+    return normalized || token;
+  } catch {
+    element.style.color = previous;
+    return token;
+  } finally {
+    element.style.color = previous;
+  }
+}
+
+function normalizeCssColorFunctions(value: string) {
+  if (!UNSUPPORTED_COLOR_FUNCTION_PATTERN.test(value)) {
     return value;
   }
 
-  return date.toLocaleDateString();
+  let cursor = 0;
+  let normalized = "";
+
+  while (cursor < value.length) {
+    const match = value
+      .slice(cursor)
+      .match(/\b(?:oklch|oklab|color)\(/i);
+
+    if (!match || match.index == null) {
+      normalized += value.slice(cursor);
+      break;
+    }
+
+    const start = cursor + match.index;
+    normalized += value.slice(cursor, start);
+
+    let depth = 0;
+    let end = start;
+    for (; end < value.length; end += 1) {
+      const char = value[end];
+      if (char === "(") {
+        depth += 1;
+      } else if (char === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          end += 1;
+          break;
+        }
+      }
+    }
+
+    const token = value.slice(start, end);
+    normalized += normalizeColorToken(token);
+    cursor = end;
+  }
+
+  return normalized;
+}
+
+function isCaptureStyleElement(node: Element | null): node is CaptureStyleElement {
+  return Boolean(
+    node && (node instanceof HTMLElement || node instanceof SVGElement),
+  );
+}
+
+function applyComputedStylesToClone(
+  source: CaptureStyleElement,
+  target: CaptureStyleElement,
+) {
+  const computed = window.getComputedStyle(source);
+
+  for (const propertyName of Array.from(computed)) {
+    if (propertyName.startsWith("--")) {
+      continue;
+    }
+
+    const value = computed.getPropertyValue(propertyName);
+    if (!value) {
+      continue;
+    }
+
+    target.style.setProperty(
+      propertyName,
+      normalizeCssColorFunctions(value),
+      computed.getPropertyPriority(propertyName),
+    );
+  }
+
+  target.style.setProperty("animation", "none");
+  target.style.setProperty("transition", "none");
+  target.style.setProperty("caret-color", "transparent");
+}
+
+function createCaptureClone(element: HTMLElement) {
+  const bounds = element.getBoundingClientRect();
+  const width = Math.max(
+    1,
+    Math.round(Math.max(bounds.width, element.scrollWidth, element.offsetWidth)),
+  );
+  const height = Math.max(
+    1,
+    Math.round(Math.max(bounds.height, element.scrollHeight, element.offsetHeight)),
+  );
+
+  const host = document.createElement("div");
+  host.style.position = "fixed";
+  host.style.left = "-200vw";
+  host.style.top = "0";
+  host.style.opacity = "0";
+  host.style.pointerEvents = "none";
+  host.style.zIndex = "-1";
+  host.style.width = `${width}px`;
+  host.style.height = `${height}px`;
+  host.style.overflow = "hidden";
+
+  const clone = element.cloneNode(true) as HTMLElement;
+  host.appendChild(clone);
+  document.body.appendChild(host);
+
+  const walk = (sourceNode: Element, targetNode: Element) => {
+    if (isCaptureStyleElement(sourceNode) && isCaptureStyleElement(targetNode)) {
+      if (sourceNode instanceof HTMLElement && targetNode instanceof HTMLElement) {
+        targetNode.setAttribute("data-hv-source-class", sourceNode.className);
+      }
+      targetNode.removeAttribute("class");
+      targetNode.removeAttribute("style");
+      targetNode.removeAttribute("id");
+      applyComputedStylesToClone(sourceNode, targetNode);
+    }
+
+    const sourceChildren = Array.from(sourceNode.children);
+    const targetChildren = Array.from(targetNode.children);
+    for (let index = 0; index < sourceChildren.length; index += 1) {
+      const sourceChild = sourceChildren[index];
+      const targetChild = targetChildren[index];
+      if (!sourceChild || !targetChild) {
+        continue;
+      }
+      walk(sourceChild, targetChild);
+    }
+  };
+
+  walk(element, clone);
+
+  return {
+    clone,
+    width,
+    height,
+    cleanup: () => host.remove(),
+  };
+}
+
+function createNormalizedStyleDeclaration(
+  style: CSSStyleDeclaration,
+): CSSStyleDeclaration {
+  return new Proxy(style, {
+    get(target, property) {
+      if (property === "getPropertyValue") {
+        return (name: string) => normalizeCssColorFunctions(target.getPropertyValue(name));
+      }
+
+      if (property === "item") {
+        return (index: number) => target.item(index);
+      }
+
+      if (property === Symbol.iterator) {
+        return target[Symbol.iterator].bind(target);
+      }
+
+      const value = Reflect.get(target, property, target);
+      if (typeof value === "string") {
+        return normalizeCssColorFunctions(value);
+      }
+
+      if (typeof value === "function") {
+        return value.bind(target);
+      }
+
+      return value;
+    },
+  }) as CSSStyleDeclaration;
+}
+
+async function withNormalizedComputedStyles<T>(action: () => Promise<T>) {
+  if (typeof window === "undefined") {
+    return action();
+  }
+
+  const originalGetComputedStyle = window.getComputedStyle.bind(window);
+  window.getComputedStyle = ((element: Element, pseudoElt?: string | null) =>
+    createNormalizedStyleDeclaration(
+      originalGetComputedStyle(element, pseudoElt ?? null),
+    )) as typeof window.getComputedStyle;
+
+  try {
+    return await action();
+  } finally {
+    window.getComputedStyle = originalGetComputedStyle;
+  }
+}
+
+export async function captureElementCanvas(
+  element: HTMLElement,
+  options?: {
+    backgroundColor?: string | null;
+    scale?: number;
+    ignoreElements?: (element: Element) => boolean;
+    sanitizeStyles?: boolean;
+  },
+) {
+  const bounds = element.getBoundingClientRect();
+  const width = Math.max(
+    1,
+    Math.round(Math.max(bounds.width, element.scrollWidth, element.offsetWidth)),
+  );
+  const height = Math.max(
+    1,
+    Math.round(Math.max(bounds.height, element.scrollHeight, element.offsetHeight)),
+  );
+
+  if (width < 2 || height < 2) {
+    return null;
+  }
+
+  const captureOptions = {
+    backgroundColor: options?.backgroundColor ?? null,
+    scale: options?.scale ?? 2,
+    useCORS: true,
+    logging: false,
+    width,
+    height,
+    windowWidth: width,
+    windowHeight: height,
+    ignoreElements: options?.ignoreElements,
+  };
+
+  if (options?.sanitizeStyles === false) {
+    return html2canvas(element, captureOptions);
+  }
+
+  const snapshot = createCaptureClone(element);
+
+  if (snapshot.width < 2 || snapshot.height < 2) {
+    snapshot.cleanup();
+    return null;
+  }
+
+  try {
+    return await withNormalizedComputedStyles(() =>
+      html2canvas(snapshot.clone, {
+        ...captureOptions,
+        width: snapshot.width,
+        height: snapshot.height,
+        windowWidth: snapshot.width,
+        windowHeight: snapshot.height,
+      }),
+    );
+  } finally {
+    snapshot.cleanup();
+  }
+}
+
+function getSimpleDecorationLines(element: HTMLElement, kind: DecorationKind) {
+  const rawText = (element.innerText || element.textContent || "").replace(/\u00a0/g, " ");
+  const maxLines = kind === "header" ? 4 : 3;
+
+  return rawText
+    .split(/\r?\n+/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, maxLines);
+}
+
+async function loadDecorationLogo(element: HTMLElement) {
+  const image = element.querySelector("img");
+  const source = image?.getAttribute("src") || image?.getAttribute("data-src") || "";
+  if (!source || typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    return await Promise.race([
+      loadImage(source),
+      new Promise<null>((resolve) => {
+        window.setTimeout(() => resolve(null), 1200);
+      }),
+    ]);
+  } catch {
+    return null;
+  }
+}
+
+async function loadDecorationLogoSource(source?: string) {
+  if (!source) {
+    return null;
+  }
+
+  try {
+    return await Promise.race([
+      loadImage(source),
+      new Promise<null>((resolve) => {
+        window.setTimeout(() => resolve(null), 1200);
+      }),
+    ]);
+  } catch {
+    return null;
+  }
+}
+
+function buildTemplateDecorationModel(
+  section: LetterheadSectionTemplate | undefined,
+  kind: DecorationKind,
+) {
+  if (!section) {
+    return null;
+  }
+
+  const lineQueue = (section.lines || []).map((line) => line.trim()).filter(Boolean);
+  const titleSeed = section.brandName?.trim() || section.title?.trim() || lineQueue.shift() || "";
+  const subtitleLines = [
+    ...(section.brandName && section.title ? [section.title.trim()] : []),
+    ...(section.subtitle?.trim() ? [section.subtitle.trim()] : []),
+    ...lineQueue,
+  ].filter(Boolean);
+
+  if (!titleSeed && subtitleLines.length === 0 && !section.logoUrl) {
+    return null;
+  }
+
+  return {
+    logoUrl: section.logoUrl,
+    primaryLine: titleSeed,
+    secondaryLines: subtitleLines,
+    align: section.align ?? "left",
+    layout: section.layout ?? (section.logoUrl ? "logo-left" : "text-only"),
+    textColor: section.textColor,
+    subtextColor: section.subtextColor,
+    accentColor: section.accentColor,
+    dividerColor: section.dividerColor,
+    backgroundColor: section.backgroundColor,
+    badgeText: kind === "header" ? section.badgeText?.trim() : undefined,
+  };
+}
+
+async function renderDecorationCanvasFromModel(
+  model: ReturnType<typeof buildTemplateDecorationModel>,
+  kind: DecorationKind,
+) {
+  if (!model) {
+    return null;
+  }
+
+  const logo = await loadDecorationLogoSource(model.logoUrl);
+  if (!model.primaryLine && model.secondaryLines.length === 0 && !logo) {
+    return null;
+  }
+
+  const canvasWidth = 1600;
+  const canvasHeight = kind === "header" ? 146 : 88;
+  const canvas = createCanvas(canvasWidth, canvasHeight);
+  const ctx = canvas.getContext("2d");
+
+  if (!ctx) {
+    return null;
+  }
+
+  const accentColor = model.accentColor || "#bfd4ff";
+  const dividerColor = model.dividerColor || (kind === "header" ? "#dbe7ff" : "#d6dee8");
+  const textColor = model.textColor || (kind === "header" ? "#0f172a" : "#1f2937");
+  const subtextColor = model.subtextColor || "#64748b";
+  const background = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+  background.addColorStop(0, model.backgroundColor || "#ffffff");
+  background.addColorStop(1, kind === "header" ? "#fbfcff" : "#ffffff");
+  ctx.fillStyle = background;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  const hasLogo = Boolean(logo) && model.layout !== "text-only";
+  const isStacked = model.layout === "stacked";
+  const horizontalPadding = 56;
+  const logoSlotWidth = hasLogo && !isStacked ? 142 : 0;
+  const align = model.align;
+  const badgeText = kind === "header" ? model.badgeText || "" : "";
+  let badgeMetrics: { width: number; height: number; x: number; y: number } | null = null;
+
+  if (badgeText) {
+    ctx.save();
+    ctx.font = "600 11px Arial, sans-serif";
+    const badgePaddingX = 11;
+    const badgeHeight = 22;
+    const badgeWidth = ctx.measureText(badgeText).width + badgePaddingX * 2;
+    const badgeX =
+      align === "center" && !hasLogo
+        ? canvas.width / 2 - badgeWidth / 2
+        : canvas.width - horizontalPadding - badgeWidth;
+    const badgeY = kind === "header" ? 24 : 28;
+    badgeMetrics = {
+      width: badgeWidth,
+      height: badgeHeight,
+      x: badgeX,
+      y: badgeY,
+    };
+    ctx.restore();
+  }
+
+  const textX = horizontalPadding + logoSlotWidth;
+  const textWidth =
+    align === "center" && !hasLogo
+      ? canvas.width - horizontalPadding * 2
+      : canvas.width
+        - textX
+        - horizontalPadding
+        - (badgeMetrics ? badgeMetrics.width + 28 : 0);
+  const textAnchor = align === "center" && !hasLogo ? canvas.width / 2 : textX;
+
+  ctx.fillStyle = kind === "header" ? "#edf4ff" : "#f3f6fa";
+  ctx.fillRect(0, 0, canvas.width, kind === "header" ? 6 : 3);
+
+  if (logo) {
+    const maxLogoWidth = kind === "header" ? 104 : 72;
+    const maxLogoHeight = kind === "header" ? 76 : 42;
+    const scale = Math.min(maxLogoWidth / logo.width, maxLogoHeight / logo.height, 1);
+    const drawWidth = Math.max(1, Math.round(logo.width * scale));
+    const drawHeight = Math.max(1, Math.round(logo.height * scale));
+    const logoX =
+      isStacked || align === "center"
+        ? canvas.width / 2 - drawWidth / 2
+        : horizontalPadding;
+    const logoY = kind === "header" ? 18 : Math.round((canvas.height - drawHeight) / 2);
+    ctx.drawImage(logo, logoX, logoY, drawWidth, drawHeight);
+  }
+
+  const primaryLine = model.primaryLine;
+  const secondaryLines = model.secondaryLines;
+  const titleY = kind === "header" ? (isStacked && hasLogo ? 108 : 46) : 46;
+  const secondaryStartY = kind === "header" ? titleY + 24 : 64;
+  const titleFont =
+    kind === "header"
+      ? "700 31px Georgia, 'Times New Roman', serif"
+      : "600 16px Georgia, 'Times New Roman', serif";
+  const bodyFont =
+    kind === "header" ? "500 13px Arial, sans-serif" : "500 12px Arial, sans-serif";
+
+  ctx.textAlign = align === "center" && !hasLogo ? "center" : "left";
+  ctx.textBaseline = "alphabetic";
+
+  if (primaryLine) {
+    ctx.fillStyle = textColor;
+    ctx.font = titleFont;
+    ctx.fillText(primaryLine, textAnchor, titleY, textWidth);
+  }
+
+  if (kind === "header") {
+    const extraLines = secondaryLines.slice();
+    const underlineWidth = Math.min(108, Math.max(52, primaryLine.length * 6.3));
+    const underlineStartX =
+      align === "center" && !hasLogo
+        ? canvas.width / 2 - underlineWidth / 2
+        : textX;
+
+    if (primaryLine) {
+      ctx.strokeStyle = accentColor;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(underlineStartX, titleY + 10);
+      ctx.lineTo(underlineStartX + underlineWidth, titleY + 10);
+      ctx.stroke();
+    }
+
+    const subtitleStartY = primaryLine ? titleY + 30 : 46;
+    const subtitleLineHeight = 17;
+
+    ctx.fillStyle = subtextColor;
+    ctx.font = bodyFont;
+    extraLines.forEach((line, index) => {
+      ctx.fillText(line, textAnchor, subtitleStartY + index * subtitleLineHeight, textWidth);
+    });
+
+    if (badgeText) {
+      const safeBadge = badgeMetrics || {
+        width: 0,
+        height: 22,
+        x: canvas.width - horizontalPadding - 80,
+        y: 24,
+      };
+      ctx.save();
+      roundedRectPath(
+        ctx,
+        safeBadge.x,
+        safeBadge.y,
+        safeBadge.width,
+        safeBadge.height,
+        safeBadge.height / 2,
+      );
+      ctx.fillStyle = "#f4f7ff";
+      ctx.fill();
+      ctx.strokeStyle = accentColor;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = subtextColor;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "600 11px Arial, sans-serif";
+      ctx.fillText(
+        badgeText,
+        safeBadge.x + safeBadge.width / 2,
+        safeBadge.y + safeBadge.height / 2,
+      );
+      ctx.restore();
+    }
+  } else {
+    ctx.fillStyle = subtextColor;
+    ctx.font = bodyFont;
+    secondaryLines.forEach((line, index) => {
+      ctx.fillText(line, textAnchor, secondaryStartY + index * 16, textWidth);
+    });
+  }
+
+  ctx.strokeStyle = dividerColor;
+  ctx.lineWidth = kind === "header" ? 1.25 : 1;
+  ctx.beginPath();
+  if (kind === "header") {
+    ctx.moveTo(horizontalPadding, canvas.height - 8);
+    ctx.lineTo(canvas.width - horizontalPadding, canvas.height - 8);
+  } else {
+    ctx.moveTo(horizontalPadding, 14);
+    ctx.lineTo(canvas.width - horizontalPadding, 14);
+  }
+  ctx.stroke();
+
+  return canvas;
+}
+
+async function renderSimpleDecorationCanvas(
+  element: HTMLElement,
+  kind: DecorationKind,
+) {
+  const lines = getSimpleDecorationLines(element, kind);
+  const align =
+    (window.getComputedStyle(element).textAlign || "").toLowerCase() === "center"
+      ? "center"
+      : "left";
+
+  return renderDecorationCanvasFromModel(
+    buildTemplateDecorationModel(
+      {
+        logoUrl:
+          element.querySelector("img")?.getAttribute("src")
+          || element.querySelector("img")?.getAttribute("data-src")
+          || undefined,
+        brandName: lines[0],
+        lines: lines.slice(1),
+        align,
+      },
+      kind,
+    ),
+    kind,
+  );
+}
+
+async function captureDecorationCanvas(
+  element: HTMLElement | null | undefined,
+  kind: DecorationKind,
+) {
+  if (!element) {
+    return null;
+  }
+
+  const simpleCanvas = await renderSimpleDecorationCanvas(element, kind);
+  if (simpleCanvas) {
+    return simpleCanvas;
+  }
+
+  return captureElementCanvas(element, {
+    backgroundColor: null,
+    scale: 1.5,
+  });
+}
+
+async function preparePageDecorations(
+  decorations?: ExportPageDecorations,
+): Promise<PreparedPageDecorations | null> {
+  if (
+    !decorations?.headerElement
+    && !decorations?.footerElement
+    && !decorations?.letterheadTemplate?.header
+    && !decorations?.letterheadTemplate?.footer
+  ) {
+    return null;
+  }
+
+  const [headerCanvas, footerCanvas] = await Promise.all([
+    decorations?.letterheadTemplate?.header
+      ? renderDecorationCanvasFromModel(
+          buildTemplateDecorationModel(decorations.letterheadTemplate.header, "header"),
+          "header",
+        )
+      : captureDecorationCanvas(decorations?.headerElement, "header"),
+    decorations?.letterheadTemplate?.footer
+      ? renderDecorationCanvasFromModel(
+          buildTemplateDecorationModel(decorations.letterheadTemplate.footer, "footer"),
+          "footer",
+        )
+      : captureDecorationCanvas(decorations?.footerElement, "footer"),
+  ]);
+
+  if (!headerCanvas && !footerCanvas) {
+    return null;
+  }
+
+  return {
+    headerCanvas,
+    footerCanvas,
+  };
+}
+
+function getDecorationHeight(
+  decorationCanvas: HTMLCanvasElement | null | undefined,
+  pageWidth: number,
+  maxHeight: number,
+) {
+  if (!decorationCanvas || decorationCanvas.width <= 0 || decorationCanvas.height <= 0) {
+    return 0;
+  }
+
+  const scaledHeight = decorationCanvas.height * (pageWidth / decorationCanvas.width);
+  return Math.max(1, Math.min(maxHeight, scaledHeight));
+}
+
+function applyPageDecorationsToCanvas(
+  baseCanvas: HTMLCanvasElement,
+  decorations?: PreparedPageDecorations | null,
+) {
+  if (!decorations?.headerCanvas && !decorations?.footerCanvas) {
+    return baseCanvas;
+  }
+
+  const pageCanvas = createCanvas(baseCanvas.width, baseCanvas.height);
+  const ctx = pageCanvas.getContext("2d");
+
+  if (!ctx) {
+    return baseCanvas;
+  }
+
+  const pageWidth = pageCanvas.width;
+  const pageHeight = pageCanvas.height;
+  const sectionGap = Math.max(3, Math.round(pageHeight * 0.0045));
+  const headerHeight = getDecorationHeight(
+    decorations.headerCanvas,
+    pageWidth,
+    pageHeight * 0.105,
+  );
+  const footerHeight = getDecorationHeight(
+    decorations.footerCanvas,
+    pageWidth,
+    pageHeight * 0.08,
+  );
+  const reservedHeight =
+    headerHeight +
+    footerHeight +
+    (headerHeight ? sectionGap : 0) +
+    (footerHeight ? sectionGap : 0);
+  const availableHeight = Math.max(pageHeight - reservedHeight, pageHeight * 0.56);
+  const contentScale = Math.min(1, availableHeight / baseCanvas.height);
+  const contentWidth = baseCanvas.width * contentScale;
+  const contentHeight = baseCanvas.height * contentScale;
+  const contentX = (pageWidth - contentWidth) / 2;
+  const contentY =
+    headerHeight +
+    (headerHeight ? sectionGap : 0) +
+    Math.max((availableHeight - contentHeight) / 2, 0) * 0.08;
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, pageWidth, pageHeight);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  if (decorations.headerCanvas && headerHeight > 0) {
+    ctx.drawImage(decorations.headerCanvas, 0, 0, pageWidth, headerHeight);
+  }
+
+  ctx.drawImage(baseCanvas, contentX, contentY, contentWidth, contentHeight);
+
+  if (decorations.footerCanvas && footerHeight > 0) {
+    ctx.drawImage(
+      decorations.footerCanvas,
+      0,
+      pageHeight - footerHeight,
+      pageWidth,
+      footerHeight,
+    );
+  }
+
+  return pageCanvas;
+}
+
+function formatSignedDate(value: string) {
+  return normalizeSignatureDate(value);
+}
+
+function createTintedImageCanvas(
+  image: HTMLImageElement,
+  signatureColor: string,
+) {
+  const tintedCanvas = createCanvas(image.width, image.height);
+  const tintedCtx = tintedCanvas.getContext("2d");
+  if (!tintedCtx) {
+    return null;
+  }
+
+  tintedCtx.drawImage(image, 0, 0);
+  tintedCtx.globalCompositeOperation = "source-in";
+  tintedCtx.fillStyle = signatureColor;
+  tintedCtx.fillRect(0, 0, tintedCanvas.width, tintedCanvas.height);
+  tintedCtx.globalCompositeOperation = "source-over";
+  return tintedCanvas;
 }
 
 async function drawSignatureStamp(
@@ -1084,20 +1877,30 @@ async function drawSignatureStamp(
   y: number,
   width: number,
   height: number,
+  options?: {
+    borderless?: boolean;
+  },
 ) {
   const isSlideStamp = placement.surfaceKind === "slide";
+  const borderless = options?.borderless ?? false;
   const radius = Math.max(8, Math.min(width, height) * 0.08);
-  const padding = isSlideStamp ? Math.max(4, width * 0.03) : Math.max(8, width * 0.06);
+  const padding = isSlideStamp ? Math.max(4, width * 0.026) : Math.max(7, width * 0.048);
   const footerHeight = Math.max(
-    isSlideStamp ? 24 : 18,
-    height * (isSlideStamp ? 0.3 : 0.22),
+    isSlideStamp ? 46 : 40,
+    height * (isSlideStamp ? 0.36 : 0.32),
   );
   const signatureImage = await loadImage(placement.signature.signatureImageUrl);
+  const signatureColor = normalizeSignatureInkColor(placement.signatureColor);
+  const tintedSignatureImage = createTintedImageCanvas(
+    signatureImage,
+    SIGNATURE_INK_COLOR_VALUES[signatureColor],
+  );
   const imageBounds = getOpaqueImageBounds(signatureImage);
   const signer = placement.signature.signedBy?.trim() || "";
+  const jobTitle = placement.signature.jobTitle?.trim() || "";
   const signedDate = formatSignedDate(placement.signature.dateSigned);
 
-  if (!isSlideStamp) {
+  if (!isSlideStamp && !borderless) {
     ctx.save();
     ctx.shadowColor = "rgba(15, 23, 42, 0.18)";
     ctx.shadowBlur = Math.max(8, width * 0.08);
@@ -1114,7 +1917,7 @@ async function drawSignatureStamp(
   }
 
   const imageAreaWidth = width - padding * 2;
-  const imageAreaHeight = height - footerHeight - padding * (isSlideStamp ? 0.75 : 1.55);
+  const imageAreaHeight = height - footerHeight - padding * (isSlideStamp ? 0.8 : 1.2);
   const imageScale = Math.min(
     imageAreaWidth / imageBounds.sw,
     imageAreaHeight / imageBounds.sh,
@@ -1125,10 +1928,10 @@ async function drawSignatureStamp(
   const imageBaseY = isSlideStamp ? y : y + padding;
   const imageY =
     imageBaseY +
-    Math.max(imageAreaHeight - imageHeight, 0) * (isSlideStamp ? 0.82 : 0.35);
+    Math.max(imageAreaHeight - imageHeight, 0) * (isSlideStamp ? 0.7 : 0.18);
 
   ctx.drawImage(
-    signatureImage,
+    tintedSignatureImage || signatureImage,
     imageBounds.sx,
     imageBounds.sy,
     imageBounds.sw,
@@ -1140,41 +1943,37 @@ async function drawSignatureStamp(
   );
 
   const footerY = y + height - footerHeight;
-  if (!isSlideStamp) {
-    ctx.save();
-    ctx.strokeStyle = "rgba(148, 163, 184, 0.3)";
-    ctx.lineWidth = Math.max(1, height * 0.01);
-    ctx.beginPath();
-    ctx.moveTo(x + padding, footerY);
-    ctx.lineTo(x + width - padding, footerY);
-    ctx.stroke();
-    ctx.restore();
-  }
-
   const nameFontSize = Math.max(
-    isSlideStamp ? 14 : 10,
-    height * (isSlideStamp ? 0.13 : 0.09),
+    isSlideStamp ? 16 : 12,
+    height * (isSlideStamp ? 0.102 : 0.08),
+  );
+  const jobTitleFontSize = Math.max(
+    isSlideStamp ? 13 : 10,
+    height * (isSlideStamp ? 0.088 : 0.066),
   );
   const dateFontSize = Math.max(
     isSlideStamp ? 12 : 9,
-    height * (isSlideStamp ? 0.118 : 0.076),
+    height * (isSlideStamp ? 0.08 : 0.058),
   );
-  const footerTextY = footerY + footerHeight / 2 + (isSlideStamp ? 1 : 0);
+  const footerLineGap = Math.max(3, height * 0.018);
+  let footerTextY = footerY + Math.max(4, padding * 0.16);
 
   ctx.fillStyle = "#334155";
-  ctx.font = `700 ${nameFontSize}px Arial, sans-serif`;
-  ctx.textBaseline = "middle";
+  ctx.textBaseline = "top";
   if (signer) {
-    ctx.fillText(signer, x + padding, footerTextY, width * 0.58);
+    ctx.font = `700 ${nameFontSize}px Arial, sans-serif`;
+    ctx.fillText(signer, x + padding, footerTextY, width * 0.78);
+    footerTextY += nameFontSize + footerLineGap;
   }
 
-  ctx.font = `600 ${dateFontSize}px Arial, sans-serif`;
-  const dateWidth = ctx.measureText(signedDate).width;
-  ctx.fillText(
-    signedDate,
-    x + width - padding - dateWidth,
-    footerTextY,
-  );
+  if (jobTitle) {
+    ctx.font = `700 ${jobTitleFontSize}px Arial, sans-serif`;
+    ctx.fillText(jobTitle, x + padding, footerTextY, width * 0.78);
+    footerTextY += jobTitleFontSize + footerLineGap;
+  }
+
+  ctx.font = `500 ${dateFontSize}px Arial, sans-serif`;
+  ctx.fillText(signedDate, x + padding, footerTextY, width * 0.78);
 }
 
 async function drawPlacementsOnCanvas(
@@ -1182,6 +1981,9 @@ async function drawPlacementsOnCanvas(
   placements: SignaturePlacement[],
   surfaceWidth: number,
   surfaceHeight: number,
+  options?: {
+    borderless?: boolean;
+  },
 ) {
   for (const placement of placements) {
     await drawSignatureStamp(
@@ -1191,6 +1993,7 @@ async function drawPlacementsOnCanvas(
       placement.y * surfaceHeight,
       placement.width * surfaceWidth,
       placement.height * surfaceHeight,
+      options,
     );
   }
 }
@@ -1792,10 +2595,13 @@ async function preserveNativeSpreadsheetFile(args: {
 async function renderCanvasesToPdf(
   canvases: HTMLCanvasElement[],
   fileName: string,
+  pageDecorations?: ExportPageDecorations,
 ) {
   const pdf = await PDFDocument.create();
+  const preparedDecorations = await preparePageDecorations(pageDecorations);
 
-  for (const canvas of canvases) {
+  for (const sourceCanvas of canvases) {
+    const canvas = applyPageDecorationsToCanvas(sourceCanvas, preparedDecorations);
     const image = await pdf.embedJpg(canvas.toDataURL("image/jpeg", 0.92));
     const page = pdf.addPage([canvas.width, canvas.height]);
     page.drawImage(image, {
@@ -1976,7 +2782,9 @@ async function loadPptxGenJS(): Promise<PptxGenConstructor> {
 function paragraphToText(paragraph: PptxParagraphModel) {
   const text = paragraph.runs.map((run) => run.text).join("");
   const indentation = "  ".repeat(paragraph.level);
-  const prefix = paragraph.bullet ? `${indentation}* ` : indentation;
+  const prefix = paragraph.bullet
+    ? `${indentation}${paragraph.bulletText || "\u2022"} `
+    : indentation;
   return `${prefix}${text}`;
 }
 
@@ -1985,6 +2793,9 @@ async function renderSlidesToCanvases(
   placements: SignaturePlacement[],
   annotations: AnnotationPlacement[],
   labels: ExportLocaleLabels = defaultExportLocaleLabels,
+  options?: {
+    borderlessSignatures?: boolean;
+  },
 ) {
   const slideWidth = exportState.slideSize.width || 9144000;
   const slideHeight = exportState.slideSize.height || 5143500;
@@ -2021,8 +2832,21 @@ async function renderSlidesToCanvases(
       }
 
       if (element.kind === "image" && element.imageSrc) {
-        const image = await loadImage(element.imageSrc);
-        ctx.drawImage(image, x, y, width, height);
+        const image = await tryLoadImage(element.imageSrc);
+        if (image) {
+          ctx.drawImage(image, x, y, width, height);
+        } else {
+          ctx.fillStyle = "rgba(241, 245, 249, 0.92)";
+          ctx.fillRect(x, y, width, height);
+          ctx.strokeStyle = "rgba(148, 163, 184, 0.45)";
+          ctx.lineWidth = Math.max(1, width * 0.003);
+          ctx.strokeRect(x, y, width, height);
+          ctx.fillStyle = "#64748b";
+          ctx.font = `${Math.max(11, width * 0.03)}px Arial, sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(element.alt || "Slide image", x + width / 2, y + height / 2, width - 28);
+        }
         ctx.restore();
         continue;
       }
@@ -2039,47 +2863,71 @@ async function renderSlidesToCanvases(
       }
 
       if (element.paragraphs?.length) {
-        let cursorY = y + Math.max(12, height * 0.08);
+        const paragraphPaddingX = Math.max(12, width * 0.04);
+        let cursorY = y + Math.max(14, height * 0.08);
 
         for (const paragraph of element.paragraphs) {
           const primaryRun = paragraph.runs[0];
+          const paragraphText = paragraph.runs.map((run) => run.text).join("");
+          const prefix = paragraph.bullet ? `${paragraph.bulletText || "\u2022"} ` : "";
+          const displayText = `${prefix}${paragraphText}`.trimEnd();
           const fontSize = Math.max(
             12,
             (primaryRun?.fontSize || 18) * scale,
           );
-          const lineHeight = fontSize * 1.3;
-          const lines = paragraphToText(paragraph).split("\n");
+          const lineHeight = fontSize * 1.34;
+          const weight = primaryRun?.bold ? "700" : "400";
+          const align =
+            paragraph.align === "ctr"
+              ? "center"
+              : paragraph.align === "r"
+                ? "right"
+                : "left";
+          const leftIndent = paragraph.level * 18 * scale;
+          const availableWidth = Math.max(
+            width - paragraphPaddingX * 2 - leftIndent,
+            40,
+          );
+
+          ctx.font = `${weight} ${fontSize}px Arial, sans-serif`;
+          const lines = wrapTextToWidth(ctx, displayText, availableWidth);
 
           for (const line of lines) {
-            const weight = primaryRun?.bold ? "700" : "400";
             ctx.font = `${weight} ${fontSize}px Arial, sans-serif`;
             ctx.fillStyle = primaryRun?.color || "#0f172a";
             ctx.textBaseline = "top";
+            ctx.textAlign = align;
 
-            let textX = x + 14 * scale;
+            let textX = x + paragraphPaddingX + leftIndent;
             const textWidth = ctx.measureText(line).width;
 
-            if (paragraph.align === "ctr") {
-              textX = x + Math.max((width - textWidth) / 2, 0);
-            } else if (paragraph.align === "r") {
-              textX = x + Math.max(width - textWidth - 14 * scale, 0);
-            } else {
-              textX += paragraph.level * 16 * scale;
+            if (align === "center") {
+              textX = x + width / 2;
+            } else if (align === "right") {
+              textX = x + width - paragraphPaddingX;
             }
 
-            ctx.fillText(line, textX, cursorY, width - 28 * scale);
+            ctx.fillText(line, textX, cursorY, availableWidth);
 
             if (primaryRun?.underline) {
               ctx.strokeStyle = primaryRun.color || "#0f172a";
               ctx.lineWidth = Math.max(1, fontSize * 0.08);
               ctx.beginPath();
-              ctx.moveTo(textX, cursorY + fontSize + 2);
-              ctx.lineTo(textX + textWidth, cursorY + fontSize + 2);
+              const underlineStart =
+                align === "center"
+                  ? textX - textWidth / 2
+                  : align === "right"
+                    ? textX - textWidth
+                    : textX;
+              ctx.moveTo(underlineStart, cursorY + fontSize + 2);
+              ctx.lineTo(underlineStart + textWidth, cursorY + fontSize + 2);
               ctx.stroke();
             }
 
             cursorY += lineHeight;
           }
+
+          cursorY += Math.max(fontSize * 0.35, 8);
         }
       }
 
@@ -2091,6 +2939,7 @@ async function renderSlidesToCanvases(
       placements.filter((placement) => placement.surfaceKey === `slide:${index + 1}`),
       canvas.width,
       canvas.height,
+      options?.borderlessSignatures ? { borderless: true } : undefined,
     );
     await drawAnnotationsOnCanvas(
       ctx,
@@ -2307,6 +3156,9 @@ async function renderSheetsToCanvases(
   placements: SignaturePlacement[],
   annotations: AnnotationPlacement[],
   labels: ExportLocaleLabels = defaultExportLocaleLabels,
+  options?: {
+    borderlessSignatures?: boolean;
+  },
 ) {
   const canvases: HTMLCanvasElement[] = [];
   const safeSheets =
@@ -2483,6 +3335,7 @@ async function renderSheetsToCanvases(
       placements.filter((placement) => placement.surfaceKey === `sheet:${sheet.name}`),
       canvas.width,
       canvas.height,
+      options?.borderlessSignatures ? { borderless: true } : undefined,
     );
     await drawAnnotationsOnCanvas(
       ctx,
@@ -2507,6 +3360,7 @@ export async function exportSignedPdfDocument(args: {
   placements: SignaturePlacement[];
   annotations: AnnotationPlacement[];
   labels?: Partial<ExportLocaleLabels>;
+  pageDecorations?: ExportPageDecorations;
 }) {
   if (!args.arrayBuffer && !args.url) {
     throw new Error("No PDF source is available for export.");
@@ -2519,6 +3373,7 @@ export async function exportSignedPdfDocument(args: {
   );
   const pdf = await loadingTask.promise;
   const exportPdf = await PDFDocument.create();
+  const preparedDecorations = await preparePageDecorations(args.pageDecorations);
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
@@ -2542,6 +3397,7 @@ export async function exportSignedPdfDocument(args: {
       ),
       canvas.width,
       canvas.height,
+      { borderless: true },
     );
     await drawAnnotationsOnCanvas(
       ctx,
@@ -2553,13 +3409,14 @@ export async function exportSignedPdfDocument(args: {
       labels,
     );
 
-    const image = await exportPdf.embedJpg(canvas.toDataURL("image/jpeg", 0.92));
-    const exportPage = exportPdf.addPage([canvas.width, canvas.height]);
+    const finalCanvas = applyPageDecorationsToCanvas(canvas, preparedDecorations);
+    const image = await exportPdf.embedJpg(finalCanvas.toDataURL("image/jpeg", 0.92));
+    const exportPage = exportPdf.addPage([finalCanvas.width, finalCanvas.height]);
     exportPage.drawImage(image, {
       x: 0,
       y: 0,
-      width: canvas.width,
-      height: canvas.height,
+      width: finalCanvas.width,
+      height: finalCanvas.height,
     });
   }
 
@@ -2579,6 +3436,7 @@ export async function exportSignedImageFile(args: {
   annotations: AnnotationPlacement[];
   asPdf?: boolean;
   labels?: Partial<ExportLocaleLabels>;
+  pageDecorations?: ExportPageDecorations;
 }) {
   const labels = { ...defaultExportLocaleLabels, ...args.labels };
   const imageBlob = new Blob([args.arrayBuffer], {
@@ -2603,6 +3461,7 @@ export async function exportSignedImageFile(args: {
       args.placements.filter((placement) => placement.surfaceKey === "image:main"),
       canvas.width,
       canvas.height,
+      args.asPdf ? { borderless: true } : undefined,
     );
     await drawAnnotationsOnCanvas(
       ctx,
@@ -2613,7 +3472,7 @@ export async function exportSignedImageFile(args: {
     );
 
     if (args.asPdf) {
-      return renderCanvasesToPdf([canvas], args.fileName);
+      return renderCanvasesToPdf([canvas], args.fileName, args.pageDecorations);
     }
 
     const shouldUseJpeg = args.fileType === "jpg" || args.fileType === "jpeg";
@@ -2639,6 +3498,7 @@ export async function exportSignedRichTextFile(args: {
   annotations: AnnotationPlacement[];
   asPdf?: boolean;
   labels?: Partial<ExportLocaleLabels>;
+  pageDecorations?: ExportPageDecorations;
 }) {
   const labels = { ...defaultExportLocaleLabels, ...args.labels };
   if (args.pages && args.pages.length > 0) {
@@ -2663,6 +3523,7 @@ export async function exportSignedRichTextFile(args: {
         ),
         canvas.width,
         canvas.height,
+        args.asPdf ? { borderless: true } : undefined,
       );
       await drawAnnotationsOnCanvas(
         ctx,
@@ -2682,7 +3543,7 @@ export async function exportSignedRichTextFile(args: {
     }
 
     if (args.asPdf) {
-      return renderCanvasesToPdf(canvases, args.fileName);
+      return renderCanvasesToPdf(canvases, args.fileName, args.pageDecorations);
     }
 
     return createDocxFromCanvases(canvases, args.fileName);
@@ -2692,14 +3553,14 @@ export async function exportSignedRichTextFile(args: {
     throw new Error("The document surface is not ready to export.");
   }
 
-  const canvas = await html2canvas(args.container, {
+  const canvas = await captureElementCanvas(args.container, {
     backgroundColor: "#ffffff",
     scale: 2,
-    useCORS: true,
-    logging: false,
-    windowWidth: args.container.scrollWidth,
-    windowHeight: args.container.scrollHeight,
   });
+
+  if (!canvas) {
+    throw new Error("Unable to render the document surface.");
+  }
   const ctx = canvas.getContext("2d");
 
   if (!ctx) {
@@ -2711,6 +3572,7 @@ export async function exportSignedRichTextFile(args: {
     args.placements.filter((placement) => placement.surfaceKey === "document:main"),
     canvas.width,
     canvas.height,
+    args.asPdf ? { borderless: true } : undefined,
   );
   await drawAnnotationsOnCanvas(
     ctx,
@@ -2722,7 +3584,7 @@ export async function exportSignedRichTextFile(args: {
 
   const pages = splitTallCanvas(canvas);
   if (args.asPdf) {
-    return renderCanvasesToPdf(pages, args.fileName);
+    return renderCanvasesToPdf(pages, args.fileName, args.pageDecorations);
   }
 
   return createDocxFromCanvases(pages, args.fileName);
@@ -2735,6 +3597,7 @@ export async function exportSignedSlidesFile(args: {
   annotations: AnnotationPlacement[];
   asPdf?: boolean;
   labels?: Partial<ExportLocaleLabels>;
+  pageDecorations?: ExportPageDecorations;
 }) {
   const labels = { ...defaultExportLocaleLabels, ...args.labels };
   const exportState =
@@ -2751,8 +3614,15 @@ export async function exportSignedSlidesFile(args: {
 
   if (args.asPdf) {
     return renderCanvasesToPdf(
-      await renderSlidesToCanvases(exportState, args.placements, args.annotations, labels),
+      await renderSlidesToCanvases(
+        exportState,
+        args.placements,
+        args.annotations,
+        labels,
+        { borderlessSignatures: true },
+      ),
       args.fileName,
+      args.pageDecorations,
     );
   }
 
@@ -2910,6 +3780,7 @@ export async function exportSignedSpreadsheetFile(args: {
   annotations: AnnotationPlacement[];
   asPdf?: boolean;
   labels?: Partial<ExportLocaleLabels>;
+  pageDecorations?: ExportPageDecorations;
 }) {
   const labels = { ...defaultExportLocaleLabels, ...args.labels };
   const sheets =
@@ -2930,8 +3801,15 @@ export async function exportSignedSpreadsheetFile(args: {
 
   if (args.asPdf) {
     return renderCanvasesToPdf(
-      await renderSheetsToCanvases(sheets, args.placements, args.annotations, labels),
+      await renderSheetsToCanvases(
+        sheets,
+        args.placements,
+        args.annotations,
+        labels,
+        { borderlessSignatures: true },
+      ),
       args.fileName,
+      args.pageDecorations,
     );
   }
 

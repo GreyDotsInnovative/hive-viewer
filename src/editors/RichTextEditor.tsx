@@ -1,6 +1,5 @@
 "use client";
 
-import html2canvas from "html2canvas";
 import mammoth from "mammoth";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import MarkdownIt from "markdown-it";
@@ -14,6 +13,7 @@ import type {
   DocumentMode,
   SupportedFileType,
 } from "../types";
+import { captureElementCanvas } from "../utils/export";
 import { sanitizeHtml } from "../utils/sanitize";
 
 const DOC_PAGE_WIDTH = 816;
@@ -51,6 +51,45 @@ function escapeHtml(value: string) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function buildPlainTextHtml(text: string) {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return '<article class="hv-plain-text-doc"><p></p></article>';
+  }
+
+  const blocks = normalized.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  const htmlBlocks = blocks.map((block) => {
+    const lines = block.split("\n").map((line) => line.trimEnd());
+    const nonEmptyLines = lines.filter((line) => line.trim().length > 0);
+
+    if (
+      nonEmptyLines.length > 0
+      && nonEmptyLines.every((line) => /^[-*•]\s+/.test(line))
+    ) {
+      const items = nonEmptyLines
+        .map((line) => line.replace(/^[-*•]\s+/, ""))
+        .map((line) => `<li>${escapeHtml(line)}</li>`)
+        .join("");
+      return `<ul>${items}</ul>`;
+    }
+
+    if (
+      nonEmptyLines.length > 0
+      && nonEmptyLines.every((line) => /^\d+[.)]\s+/.test(line))
+    ) {
+      const items = nonEmptyLines
+        .map((line) => line.replace(/^\d+[.)]\s+/, ""))
+        .map((line) => `<li>${escapeHtml(line)}</li>`)
+        .join("");
+      return `<ol>${items}</ol>`;
+    }
+
+    return `<p>${lines.map((line) => escapeHtml(line)).join("<br />")}</p>`;
+  });
+
+  return `<article class="hv-plain-text-doc">${htmlBlocks.join("")}</article>`;
 }
 
 async function waitForContainerImages(container: HTMLElement) {
@@ -239,19 +278,21 @@ async function captureDocxPageModel(
   pageElement.style.transform = "none";
 
   try {
-    const pageCanvas = await html2canvas(pageElement, {
+    const pageCanvas = await captureElementCanvas(pageElement, {
       backgroundColor: "#ffffff",
       scale: PAGE_RENDER_SCALE,
-      useCORS: true,
-      logging: false,
-      width,
-      height,
-      windowWidth: width,
-      windowHeight: height,
+      sanitizeStyles: false,
       ignoreElements: (element) =>
         element instanceof HTMLElement &&
-        element.closest(".hv-signature-overlay") !== null,
+        (
+          element.closest(".hv-signature-overlay") !== null
+          || element.closest('[data-hv-source-class~="hv-signature-overlay"]') !== null
+        ),
     });
+
+    if (!pageCanvas) {
+      throw new Error("Unable to capture the DOCX page surface.");
+    }
 
     return {
       pageNumber,
@@ -575,23 +616,6 @@ function createAuthoringTemplates(): AuthoringTemplate[] {
       ].join(""),
     },
     {
-      id: "memo",
-      labelKey: "documents.richText.template.memo",
-      descriptionKey: "documents.richText.templateDesc.memo",
-      html: [
-        "<h1>Internal Memo</h1>",
-        "<table><tbody><tr><th>To</th><td>Leadership Team</td></tr><tr><th>From</th><td>Your Name</td></tr><tr><th>Date</th><td>March 24, 2026</td></tr><tr><th>Subject</th><td>Operational update and action plan</td></tr></tbody></table>",
-        "<h2>Executive Summary</h2>",
-        "<p>Summarize the situation in one concise paragraph. Include what changed, why it matters, and what needs to happen next.</p>",
-        "<h2>Highlights</h2>",
-        "<ul><li>Key win or progress update.</li><li>Constraint or risk that needs monitoring.</li><li>Decision that requires leadership input.</li></ul>",
-        "<h2>Risks and Dependencies</h2>",
-        "<ul><li>Note any timeline, vendor, budget, or staffing concerns.</li></ul>",
-        "<h2>Action Tracker</h2>",
-        "<table><thead><tr><th>Owner</th><th>Action</th><th>Due Date</th></tr></thead><tbody><tr><td>Name</td><td>Describe the next action</td><td>Date</td></tr><tr><td>Name</td><td>Describe the next action</td><td>Date</td></tr></tbody></table>",
-      ].join(""),
-    },
-    {
       id: "notes",
       labelKey: "documents.richText.template.notes",
       descriptionKey: "documents.richText.templateDesc.notes",
@@ -802,7 +826,7 @@ export function RichTextEditor(props: RichTextEditorProps) {
             setEditableContentHtml(nextHtml);
             setSelectedTemplateId("");
           } else {
-            const nextHtml = `<pre style="white-space: pre-wrap; font-family: monospace;">${escapeHtml(text)}</pre>`;
+            const nextHtml = buildPlainTextHtml(text);
             setContentHtml(nextHtml);
             setEditableContentHtml(nextHtml);
             setSelectedTemplateId("");
@@ -1075,16 +1099,14 @@ export function RichTextEditor(props: RichTextEditorProps) {
           measureElement.scrollHeight,
           DOC_PAGE_HEIGHT,
         );
-        const fullCanvas = await html2canvas(measureElement, {
+        const fullCanvas = await captureElementCanvas(measureElement, {
           backgroundColor: "#ffffff",
           scale: PAGE_RENDER_SCALE,
-          useCORS: true,
-          logging: false,
-          width: DOC_PAGE_WIDTH,
-          height: totalHeight,
-          windowWidth: DOC_PAGE_WIDTH,
-          windowHeight: totalHeight,
+          sanitizeStyles: false,
         });
+        if (!fullCanvas) {
+          throw new Error("Unable to capture the rich text document surface.");
+        }
         const breakOffsets = calculatePageBreakOffsets(
           measureElement,
           DOC_PAGE_HEIGHT,
@@ -1725,6 +1747,8 @@ export function RichTextEditor(props: RichTextEditorProps) {
                     signatureNoteIndicatorLabel={
                       props.signatureOverlay.signatureNoteIndicatorLabel
                     }
+                    signatureColorLabel={props.signatureOverlay.signatureColorLabel}
+                    signatureColorNames={props.signatureOverlay.signatureColorNames}
                     removeSignatureLabel={props.signatureOverlay.removeSignatureLabel}
                     annotationTitle={props.signatureOverlay.annotationTitle}
                     linkedAnnotationTitle={props.signatureOverlay.linkedAnnotationTitle}
@@ -1808,6 +1832,8 @@ export function RichTextEditor(props: RichTextEditorProps) {
                     signatureNoteIndicatorLabel={
                       props.signatureOverlay.signatureNoteIndicatorLabel
                     }
+                    signatureColorLabel={props.signatureOverlay.signatureColorLabel}
+                    signatureColorNames={props.signatureOverlay.signatureColorNames}
                     removeSignatureLabel={props.signatureOverlay.removeSignatureLabel}
                     annotationTitle={props.signatureOverlay.annotationTitle}
                     linkedAnnotationTitle={
@@ -1835,15 +1861,16 @@ export function RichTextEditor(props: RichTextEditorProps) {
   }
 
   return (
-    <div className="hv-view-single">
-      <div className="hv-page-container hv-docx-page-surface">
-        <input
-          ref={imageInputRef}
-          type="file"
-          accept="image/*"
-          className="hv-richtext-file-input"
-          onChange={handleInsertImage}
-        />
+    <div className="hv-view-single hv-richtext-authoring-shell">
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        className="hv-richtext-file-input"
+        onChange={handleInsertImage}
+      />
+      {isAuthoringMode && (
+        <div className="hv-richtext-authoring-top">
         <div
           className="hv-richtext-toolbar"
           role="toolbar"
@@ -2315,7 +2342,10 @@ export function RichTextEditor(props: RichTextEditorProps) {
             </div>
           )}
         </div>
+      </div>
+      )}
 
+      <div className="hv-page-container hv-docx-page-surface">
         {loading ? (
           <div className="hv-loading-copy">
             {props.locale["documents.richText.processingText"]}
@@ -2360,6 +2390,8 @@ export function RichTextEditor(props: RichTextEditorProps) {
               signatureNoteIndicatorLabel={
                 props.signatureOverlay.signatureNoteIndicatorLabel
               }
+              signatureColorLabel={props.signatureOverlay.signatureColorLabel}
+              signatureColorNames={props.signatureOverlay.signatureColorNames}
               removeSignatureLabel={props.signatureOverlay.removeSignatureLabel}
               annotationTitle={props.signatureOverlay.annotationTitle}
               linkedAnnotationTitle={props.signatureOverlay.linkedAnnotationTitle}

@@ -2,13 +2,21 @@
 
 import { Check, Plus, Trash2, X } from "lucide-react";
 import React, { useMemo, useRef, useState } from "react";
-import type { Signature } from "../types";
+import type { Signature, SignatureInkColor } from "../types";
+import {
+  normalizeSignature,
+  normalizeSignatureDate,
+  SIGNATURE_INK_COLORS,
+  SIGNATURE_INK_COLOR_VALUES,
+} from "../utils/signature";
 
 interface SignaturePanelProps {
   isOpen: boolean;
   onClose: () => void;
   onSelectSignature: (sig: Signature) => void;
   selectedSignature?: Signature | null;
+  selectedColor: SignatureInkColor;
+  onSelectedColorChange: (color: SignatureInkColor) => void;
   onClearSelection: () => void;
   externalSignatures?: Signature[];
   onSignRequest?: () => Promise<Signature>;
@@ -23,6 +31,7 @@ function sameSignature(left: Signature, right: Signature) {
   return (
     left.signatureImageUrl === right.signatureImageUrl &&
     left.signedBy === right.signedBy &&
+    left.jobTitle === right.jobTitle &&
     left.dateSigned === right.dateSigned
   );
 }
@@ -96,6 +105,8 @@ export function SignaturePanel(props: SignaturePanelProps) {
     onClose,
     onSelectSignature,
     selectedSignature,
+    selectedColor,
+    onSelectedColorChange,
     onClearSelection,
     externalSignatures = [],
     onSignRequest,
@@ -122,16 +133,12 @@ export function SignaturePanel(props: SignaturePanelProps) {
   const handleCreateClick = async () => {
     if (onSignRequest) {
       try {
-        const newSignature = await onSignRequest();
-        if (!newSignature) {
+        const requestedSignature = await onSignRequest();
+        if (!requestedSignature?.signatureImageUrl) {
           return;
         }
 
-        setLocalSignatures((prev) =>
-          prev.some((signature) => sameSignature(signature, newSignature))
-            ? prev
-            : [...prev, newSignature],
-        );
+        const newSignature = normalizeSignature(requestedSignature);
         onSelectSignature(newSignature);
       } catch (error) {
         console.error("Custom sign request failed", error);
@@ -171,7 +178,7 @@ export function SignaturePanel(props: SignaturePanelProps) {
     const newSignature: Signature = {
       id: Date.now().toString(),
       signatureImageUrl: trimSignatureCanvas(canvas),
-      dateSigned: new Date().toISOString(),
+      dateSigned: normalizeSignatureDate(),
     };
 
     setLocalSignatures((prev) => [...prev, newSignature]);
@@ -288,6 +295,24 @@ export function SignaturePanel(props: SignaturePanelProps) {
               <div className="hv-signature-selection-copy">
                 {locale["signatures.placeHint"]}
               </div>
+              <div className="hv-signature-color-picker">
+                <span className="hv-signature-color-picker-label">
+                  {locale["signatures.color"]}
+                </span>
+                <div className="hv-signature-color-swatch-row">
+                  {SIGNATURE_INK_COLORS.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      className={`hv-signature-color-swatch ${selectedColor === color ? "active" : ""}`}
+                      style={{ background: SIGNATURE_INK_COLOR_VALUES[color] }}
+                      aria-label={`${locale["signatures.color"]}: ${locale[`signatures.color.${color}`]}`}
+                      title={locale[`signatures.color.${color}`]}
+                      onClick={() => onSelectedColorChange(color)}
+                    />
+                  ))}
+                </div>
+              </div>
               <button
                 type="button"
                 className="hv-btn"
@@ -323,17 +348,20 @@ export function SignaturePanel(props: SignaturePanelProps) {
                   className="hv-signature-item-main"
                   onClick={() => onSelectSignature(signature)}
                 >
-                  <img
-                    src={signature.signatureImageUrl}
-                    alt={signature.signedBy ? `Signature by ${signature.signedBy}` : "Signature"}
-                    style={{ height: "42px", objectFit: "contain" }}
-                  />
-                  <div className="hv-signature-item-copy">
-                    {signature.signedBy && <strong>{signature.signedBy}</strong>}
-                    <span>
-                      {new Date(signature.dateSigned).toLocaleDateString()}
-                    </span>
-                    {signature.comment && <em>{signature.comment}</em>}
+                  <div className="hv-signature-item-stack">
+                    <img
+                      src={signature.signatureImageUrl}
+                      alt={signature.signedBy ? `Signature by ${signature.signedBy}` : "Signature"}
+                      className="hv-signature-item-image"
+                    />
+                    <div className="hv-signature-item-copy">
+                      {signature.signedBy && <strong>{signature.signedBy}</strong>}
+                      {signature.jobTitle && <span>{signature.jobTitle}</span>}
+                      <span>
+                        {normalizeSignatureDate(signature.dateSigned)}
+                      </span>
+                      {signature.comment && <em>{signature.comment}</em>}
+                    </div>
                   </div>
                   {isSelected && (
                     <span className="hv-signature-item-check">

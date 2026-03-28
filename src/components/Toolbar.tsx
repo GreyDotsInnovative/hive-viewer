@@ -48,6 +48,8 @@ interface ToolbarProps {
   isSaving: boolean;
   onSave?: () => void;
   onExportPdf?: () => void;
+  showExportPdfAction?: boolean;
+  saveLabel?: string;
   locale: Record<string, string>;
 }
 
@@ -70,6 +72,8 @@ export function Toolbar(props: ToolbarProps) {
     isSaving,
     onSave,
     onExportPdf,
+    showExportPdfAction = true,
+    saveLabel,
     locale,
   } = props;
 
@@ -236,23 +240,25 @@ export function Toolbar(props: ToolbarProps) {
 
         {saveEnabled && (
           <>
-            <button
-              className="hv-btn"
-              onClick={onExportPdf}
-              title={locale["toolbar.exportPdf"]}
-              disabled={isSaving}
-            >
-              <FileDown size={18} />
-            </button>
+            {showExportPdfAction && (
+              <button
+                className="hv-btn"
+                onClick={onExportPdf}
+                title={locale["toolbar.exportPdf"]}
+                disabled={isSaving}
+              >
+                <FileDown size={18} />
+              </button>
+            )}
             <button
               className="hv-btn hv-btn-primary"
               onClick={onSave}
-              title={locale["toolbar.save"]}
+              title={saveLabel ?? locale["toolbar.save"]}
               disabled={isSaving}
             >
               <Save size={18} style={{ marginRight: "8px" }} />
               <span className="hv-btn-label">
-                {isSaving ? locale.loading : locale["toolbar.save"]}
+                {isSaving ? locale.loading : saveLabel ?? locale["toolbar.save"]}
               </span>
             </button>
 

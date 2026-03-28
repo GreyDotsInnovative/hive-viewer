@@ -27,6 +27,7 @@ export interface PptxParagraphModel {
   align?: string;
   level: number;
   bullet: boolean;
+  bulletText?: string;
 }
 
 export interface PptxSlideElementModel {

@@ -8,6 +8,12 @@ import type {
   SignaturePlacement,
   SignatureSurfaceKind,
 } from "../types";
+import {
+  normalizeSignatureDate,
+  normalizeSignatureInkColor,
+  SIGNATURE_INK_COLORS,
+  SIGNATURE_INK_COLOR_VALUES,
+} from "../utils/signature";
 
 interface SignatureOverlayProps extends DocumentSurfaceOverlayState {
   surfaceKey: string;
@@ -41,13 +47,13 @@ function clamp(value: number, min: number, max: number) {
 function getDefaultPlacementSize(kind: SignatureSurfaceKind) {
   switch (kind) {
     case "sheet":
-      return { width: 0.18, height: 0.06 };
+      return { width: 0.3, height: 0.16 };
     case "slide":
-      return { width: 0.22, height: 0.08 };
+      return { width: 0.34, height: 0.18 };
     case "image":
-      return { width: 0.24, height: 0.08 };
+      return { width: 0.36, height: 0.18 };
     default:
-      return { width: 0.22, height: 0.07 };
+      return { width: 0.34, height: 0.16 };
   }
 }
 
@@ -72,6 +78,10 @@ function getLinkedAnnotationIds(annotations: AnnotationPlacement[]) {
   );
 }
 
+function buildMaskImageValue(source: string) {
+  return `url("${source.replaceAll('"', '\\"')}")`;
+}
+
 export function SignatureOverlay(props: SignatureOverlayProps) {
   const {
     surfaceKey,
@@ -91,6 +101,8 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
     signatureAltLabel,
     signatureAltByLabel,
     signatureNoteIndicatorLabel,
+    signatureColorLabel,
+    signatureColorNames,
     removeSignatureLabel,
     annotationTitle,
     linkedAnnotationTitle,
@@ -345,9 +357,10 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
         const isActive = placement.id === activePlacementId;
         const hasLinkedAnnotation = linkedAnnotationIds.has(placement.id);
         const signer = placement.signature.signedBy?.trim();
-        const signedDate = new Date(
-          placement.signature.dateSigned,
-        ).toLocaleDateString();
+        const jobTitle = placement.signature.jobTitle?.trim();
+        const signedDate = normalizeSignatureDate(placement.signature.dateSigned);
+        const signatureColor = normalizeSignatureInkColor(placement.signatureColor);
+        const maskImage = buildMaskImageValue(placement.signature.signatureImageUrl);
 
         return (
           <div
@@ -392,23 +405,61 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
               </button>
             )}
 
-            <img
-              src={placement.signature.signatureImageUrl}
-              alt={signer ? `${signatureAltByLabel} ${signer}` : signatureAltLabel}
-              className="hv-signature-image"
-              draggable={false}
-            />
+            <div className="hv-signature-image-wrap">
+              <div
+                role="img"
+                aria-label={signer ? `${signatureAltByLabel} ${signer}` : signatureAltLabel}
+                className="hv-signature-image hv-signature-ink"
+                style={{
+                  backgroundColor: SIGNATURE_INK_COLOR_VALUES[signatureColor],
+                  maskImage,
+                  WebkitMaskImage: maskImage,
+                }}
+              />
+            </div>
 
-            <div
-              className={`hv-signature-meta ${signer ? "" : "single"}`}
-            >
+            <div className="hv-signature-meta">
               {signer && <span className="hv-signature-meta-name">{signer}</span>}
+              {jobTitle && (
+                <span className="hv-signature-meta-jobtitle">{jobTitle}</span>
+              )}
               <span className="hv-signature-meta-date">{signedDate}</span>
             </div>
 
             {hasLinkedAnnotation && (
               <div className="hv-signature-note-indicator">
                 {signatureNoteIndicatorLabel}
+              </div>
+            )}
+
+            {isActive && (
+              <div
+                className="hv-signature-color-toolbar"
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                }}
+              >
+                <span className="hv-signature-color-toolbar-label">
+                  {signatureColorLabel}
+                </span>
+                <div className="hv-signature-color-swatch-row">
+                  {SIGNATURE_INK_COLORS.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      className={`hv-signature-color-swatch ${signatureColor === color ? "active" : ""}`}
+                      style={{ background: SIGNATURE_INK_COLOR_VALUES[color] }}
+                      aria-label={`${signatureColorLabel}: ${signatureColorNames[color]}`}
+                      title={signatureColorNames[color]}
+                      onClick={() =>
+                        onUpdatePlacement(placement.id, { signatureColor: color })
+                      }
+                    />
+                  ))}
+                </div>
               </div>
             )}
 

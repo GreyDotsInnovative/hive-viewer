@@ -2,6 +2,7 @@
 /node_modules
 /dist
 /generated
+/.npm-cache
 
 # environment variables
 .env

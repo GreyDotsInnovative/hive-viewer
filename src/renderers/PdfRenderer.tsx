@@ -256,6 +256,8 @@ function PdfPage({
         signatureAltLabel={signatureOverlay.signatureAltLabel}
         signatureAltByLabel={signatureOverlay.signatureAltByLabel}
         signatureNoteIndicatorLabel={signatureOverlay.signatureNoteIndicatorLabel}
+        signatureColorLabel={signatureOverlay.signatureColorLabel}
+        signatureColorNames={signatureOverlay.signatureColorNames}
         removeSignatureLabel={signatureOverlay.removeSignatureLabel}
         annotationTitle={signatureOverlay.annotationTitle}
         linkedAnnotationTitle={signatureOverlay.linkedAnnotationTitle}

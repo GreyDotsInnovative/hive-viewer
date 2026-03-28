@@ -1147,6 +1147,8 @@ export function SpreadsheetEditor(props: SpreadsheetEditorProps) {
               signatureNoteIndicatorLabel={
                 props.signatureOverlay.signatureNoteIndicatorLabel
               }
+              signatureColorLabel={props.signatureOverlay.signatureColorLabel}
+              signatureColorNames={props.signatureOverlay.signatureColorNames}
               removeSignatureLabel={props.signatureOverlay.removeSignatureLabel}
               annotationTitle={props.signatureOverlay.annotationTitle}
               linkedAnnotationTitle={props.signatureOverlay.linkedAnnotationTitle}

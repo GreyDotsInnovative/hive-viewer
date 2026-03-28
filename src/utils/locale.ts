@@ -13,6 +13,7 @@ export const defaultLocale: Record<string, string> = {
   "toolbar.annotate": "Add Annotation",
   "toolbar.headerFooter": "Header & Footer",
   "toolbar.save": "Save",
+  "toolbar.finalizePdf": "Finalize PDF",
   "toolbar.exportPdf": "Export as PDF",
   "toolbar.zoomIn": "Zoom in",
   "toolbar.zoomOut": "Zoom out",
@@ -33,6 +34,11 @@ export const defaultLocale: Record<string, string> = {
   "signatures.altBy": "Signature by",
   "signatures.noteIndicator": "Note",
   "signatures.remove": "Remove signature",
+  "signatures.color": "Ink color",
+  "signatures.color.black": "Black",
+  "signatures.color.blue": "Blue",
+  "signatures.color.red": "Red",
+  "signatures.color.green": "Green",
   "annotations.placeHint": "Click on the document surface to place an annotation.",
   "annotations.placeholder": "Add instruction or review note...",
   "annotations.title": "Annotation",
@@ -106,7 +112,6 @@ export const defaultLocale: Record<string, string> = {
   "documents.richText.templatesHide": "Hide templates",
   "documents.richText.template.blank": "Blank",
   "documents.richText.template.letter": "Letter",
-  "documents.richText.template.memo": "Memo",
   "documents.richText.template.notes": "Meeting notes",
   "documents.richText.template.agreement": "Agreement",
   "documents.richText.template.proposal": "Proposal",
@@ -114,8 +119,6 @@ export const defaultLocale: Record<string, string> = {
     "A polished starting page with space for a title, summary, and first section.",
   "documents.richText.templateDesc.letter":
     "A professional business letter with subject line and key-point structure.",
-  "documents.richText.templateDesc.memo":
-    "A crisp internal memo with summary, risks, and action tracker sections.",
   "documents.richText.templateDesc.notes":
     "A clean meeting-notes format with agenda, decisions, and follow-ups.",
   "documents.richText.templateDesc.agreement":
