@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.1 - 2026-03-30
+
+Repackaged to npm as `@zerohive/hive-viewer@2.0.1`.
+
+### Highlights
+
+- Patch release to republish the current viewer package as `2.0.1`.
+- No intended feature changes from `2.0.0`; this update is for packaging/versioning only.
+
 ## 2.0.0 - 2026-03-28
 
 Published to npm as `@zerohive/hive-viewer@2.0.0`.

@@ -341,7 +341,21 @@
   border-radius: var(--hv-radius);
   color: #991b1b;
   text-align: center;
-  max-width: 500px;
+  box-sizing: border-box;
+  width: min(100%, 560px);
+  min-width: min(100%, 280px);
+  max-width: 560px;
+  box-shadow: var(--hv-shadow);
+}
+
+.hv-error-banner strong,
+.hv-error-banner p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.hv-error-banner p {
+  margin: 8px 0 0;
 }
 
 .hv-info-banner {
